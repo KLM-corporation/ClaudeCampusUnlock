@@ -1,0 +1,16 @@
+# Secrets and runtime state
+.env
+*.env
+data/
+*.log
+
+# Generated deployment files
+compose.yml
+Caddyfile
+CONFIGURATION-ROUTEUR.txt
+
+# Editor / OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

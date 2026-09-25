@@ -1,231 +1,304 @@
-# ClaudeCampusUnlock
+# ClaudeCampusUnlock 🔓
 
-> Passerelle web privée vers un navigateur distant sécurisé pour accéder à Claude via une connexion de confiance (domicile ou 4G).
+> **Accédez librement à Claude.ai depuis n'importe quel réseau filtré (Campus, Université, Entreprise, Lycée) via un navigateur distant privé et sécurisé hébergé chez vous ou sur votre smartphone.**
 
-Deux méthodes d’accès à un navigateur distant qui sort sur une connexion Internet contrôlée par l’administrateur :
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform: Windows | Android](https://img.shields.io/badge/Platform-Windows%20%7C%20Android-green.svg)](#choisir-votre-méthode)
+[![Docker: Ready](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](install-claude-gateway.ps1)
+[![Termux: Ready](https://img.shields.io/badge/Termux-proot--distro-black.svg)](termux-browser-gateway.sh)
 
-1. **Windows + Docker Desktop + Caddy** : adapté à un PC Windows toujours allumé, avec un nom DNS public et une redirection HTTPS.
-2. **Android + Termux** : solution expérimentale utilisant Chromium dans Debian/proot-distro, noVNC et un tunnel HTTPS temporaire.
+---
 
-Le navigateur s’exécute sur la machine relais. L’utilisateur distant n’a besoin que d’un navigateur web ordinaire.
+## 🎯 Comment ça fonctionne ?
 
-### Fichiers du projet
+Sur les réseaux scolaires et universitaires (Eduroam, Wi-Fi campus, résidences), l'accès à Claude.ai est souvent filtré ou bloqué. 
 
-- [install-claude-gateway.ps1](install-claude-gateway.ps1) : script d'installation et de déploiement automatique sur Windows (Docker + Caddy + Firefox).
-- [README-claude-gateway.md](README-claude-gateway.md) : guide d'utilisation rapide pour la méthode Windows.
-- [termux-browser-gateway.sh](termux-browser-gateway.sh) : script pour Android / Termux (Debian + Chromium + noVNC + Nginx + Cloudflare Tunnel).
-- [README-TERMUX.md](README-TERMUX.md) : guide détaillé dédié à la méthode Android / Termux.
-- [SECURITY.md](SECURITY.md) : consignes et politique de sécurité.
+**ClaudeCampusUnlock** transforme un appareil sous votre contrôle en **passerelle web privée** :
+1. Un navigateur complet (Firefox ou Chromium) s'exécute à distance sur votre machine relais (votre PC maison ou votre smartphone 4G).
+2. Vos amis ou vous-même vous connectez simplement depuis un navigateur web standard (Chrome, Safari, Edge) via une adresse HTTPS sécurisée.
+3. Le site **Claude.ai ne voit que l'adresse IP de votre domicile ou de votre forfait 4G** : le blocage du campus est contourné en toute transparence, sans aucun logiciel à installer sur le PC du campus !
 
-> **Important :** ce projet ne doit pas être déployé comme proxy ouvert. Il doit rester protégé par authentification, HTTPS et un accès strictement limité à des personnes de confiance.
+```mermaid
+flowchart LR
+    subgraph Campus["Campus / Université (Réseau Wi-Fi filtré)"]
+        User["Étudiant / Ami<br/>(Navigateur web ordinaire)"]
+    end
 
-## Avertissement et sécurité
+    subgraph Internet["Accès Sécurisé HTTPS"]
+        DNS["DuckDNS / DynDNS<br/>(Méthode Windows)"]
+        CF["Cloudflare Tunnel<br/>(Méthode Android)"]
+    end
 
-- Vérifie la législation locale, les règles de ton fournisseur d’accès et les conditions d’utilisation des services utilisés.
-- Chaque utilisateur devrait utiliser son **propre compte Claude**. Ne partage jamais un mot de passe, cookie, session ou token Claude.
-- Ne commite jamais de mot de passe, clé privée, token GitHub, fichier `.env`, cookie ou adresse personnelle.
-- Un utilisateur distant peut faire sortir du trafic par l’adresse IP de la maison ou du téléphone. N’accorde l’accès qu’à des personnes de confiance.
-- N’expose jamais directement les ports RDP `3389`, VNC `5900` ou les ports internes Firefox `5800`.
-- L’option Web Terminal doit rester désactivée. Le gestionnaire de fichiers doit rester désactivé sauf nécessité.
-- Les sessions persistantes peuvent contenir des cookies et données de navigation. L’administrateur de la machine hôte peut techniquement y accéder.
+    subgraph Relais["Votre Machine Relais (Connexion libre)"]
+        subgraph OptionA["Option 1 : PC Maison (Windows)"]
+            Router["Box Internet<br/>(Ports 80/443)"]
+            Caddy["Caddy Proxy<br/>(Certificat SSL auto)"]
+            Firefox["Conteneurs Firefox isolés<br/>(1 profil distinct par ami)"]
+            Router --> Caddy --> Firefox
+        end
 
-## Méthode 1 — Windows, Docker et Caddy
+        subgraph OptionB["Option 2 : Smartphone 4G (Termux)"]
+            Nginx["Nginx + Mot de passe"]
+            Chromium["Chromium + noVNC"]
+            Nginx --> Chromium
+        end
+    end
 
-### Prérequis
+    subgraph Cible["Claude.ai"]
+        Claude["Claude.ai<br/>(Connexion autorisée)"]
+    end
 
-- Windows 10/11 64 bits ;
-- virtualisation matérielle activée ;
-- WSL2 et Docker Desktop avec le moteur Linux ;
-- un PC qui peut rester allumé ;
-- un nom DNS public qui pointe vers l’adresse IP de la maison ;
-- accès au routeur pour configurer NAT/PAT.
-
-### Installation
-
-Copie `install-claude-gateway.ps1` sur le PC Windows, puis ouvre PowerShell en tant qu'administrateur.
-
-Si Docker Desktop n’est pas encore installé :
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-.\install-claude-gateway.ps1 -InstallDocker
+    User -->|Connexion HTTPS| DNS --> Router
+    User -->|Connexion HTTPS| CF --> Nginx
+    Firefox --> Claude
+    Chromium --> Claude
 ```
 
-Après installation et démarrage de Docker Desktop, ou si Docker était déjà installé :
+---
+
+## ⚡ Choisir votre méthode
+
+| Critère | 💻 Méthode 1 : Windows + Docker | 📱 Méthode 2 : Android + Termux |
+| :--- | :--- | :--- |
+| **Matériel requis** | PC Windows 10/11 fixe allumé | Smartphone Android avec données 4G/5G |
+| **Nombre d'utilisateurs** | **1 à 20 amis** en simultané (profils étanches) | **1 session partagée** (à la demande) |
+| **Stabilité de l'adresse** | Fixe et permanente (`alice.mon-domaine.org`) | Temporaire (URL Cloudflare change au redémarrage) |
+| **Configuration routeur** | Oui (ouverture des ports 80/443 sur la box) | **Aucune** (contourne le CGNAT grâce au tunnel) |
+| **Guide d'installation** | [Voir le guide Windows](#-méthode-1--windows-docker-et-caddy) | [Voir le guide Android](#-méthode-2--android-et-termux) |
+
+---
+
+## 💻 Méthode 1 — Windows, Docker et Caddy
+
+Cette méthode est recommandée si vous avez un PC Windows connecté à votre box Internet à la maison. Elle offre à chaque ami son propre navigateur Firefox indépendant, avec ses propres cookies et sessions persistantes.
+
+### 📋 Prérequis
+
+- Windows 10 ou 11 (64 bits).
+- Connexion à la box Internet de la maison avec accès à l'interface d'administration.
+
+---
+
+### 🚀 Étape 1 : Récupérer le projet
+
+Ouvrez une fenêtre **PowerShell en tant qu'administrateur** (clic droit sur le menu Démarrer > *Terminal (administrateur)* ou *Windows PowerShell (administrateur)*) :
+
+```powershell
+# Cloner le dépôt et se placer dans le dossier
+git clone https://github.com/KLM-corporation/ClaudeCampusUnlock.git
+cd ClaudeCampusUnlock
+```
+
+*(Si vous n'avez pas Git, téléchargez directement le script d'installation en une ligne :)*
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/KLM-corporation/ClaudeCampusUnlock/main/install-claude-gateway.ps1" -OutFile "install-claude-gateway.ps1"
+```
+
+---
+
+### 🌐 Étape 2 : Créer un nom DNS gratuit (DuckDNS en 2 minutes)
+
+Caddy a besoin d'un nom de domaine public pour générer automatiquement un certificat HTTPS gratuit (Let's Encrypt) :
+
+1. Rendez-vous sur [DuckDNS.org](https://www.duckdns.org) et connectez-vous (avec un compte Google, GitHub ou Reddit).
+2. Dans le champ **sub domain**, choisissez un nom (par exemple `relais-claude`) et cliquez sur **add domain**.
+3. DuckDNS détecte automatiquement votre adresse IP publique actuelle.
+4. Si vous configurez plusieurs amis, vous pouvez créer plusieurs sous-domaines ou utiliser des préfixes (ex: `alice-claude.duckdns.org`, `bob-claude.duckdns.org`).
+
+---
+
+### 🔀 Étape 3 : Ouvrir les ports 80 et 443 sur votre Box Internet (NAT / PAT)
+
+Pour que Caddy puisse recevoir le trafic et valider les certificats HTTPS :
+
+1. **Trouvez l'adresse IP locale de votre PC** :
+   Dans PowerShell, tapez :
+   ```powershell
+   ipconfig
+   ```
+   Notez l'adresse **IPv4** (généralement `192.168.1.XX` ou `192.168.0.XX`) et la **Passerelle par défaut** (l'IP de votre box, ex: `192.168.1.1`).
+
+2. **Accédez à l'interface de votre box** :
+   Ouvrez votre navigateur et allez sur l'IP de votre box (ex: `http://192.168.1.1` ou `http://mafreebox.freebox.fr`).
+   - **Livebox (Orange)** : *Réseau* > *Baux DHCP statiques* (fixez l'IP de votre PC) puis *Réseau* > *NAT/PAT*.
+   - **Freebox** : *Paramètres de la Freebox* > *Gestion des ports*.
+   - **Bbox (Bouygues)** : *Réseau local* > *Redirection de ports*.
+   - **SFR Box** : *Réseau* > *NAT*.
+
+3. **Ajoutez les 2 règles de redirection suivantes** vers l'IP locale de votre PC :
+   | Nom de la règle | Protocole | Port Externe | Port Interne | Adresse IP de destination |
+   | :--- | :--- | :--- | :--- | :--- |
+   | **HTTP Caddy** | TCP | `80` | `80` | *IP locale de votre PC* |
+   | **HTTPS Caddy** | TCP | `443` | `443` | *IP locale de votre PC* |
+
+> [!WARNING]
+> Ne redirigez **jamais** les ports `5800`, `5900` ou `3389`. Seuls les ports `80` et `443` doivent être exposés à Caddy.
+
+---
+
+### ⚙️ Étape 4 : Lancer l'installation automatique
+
+Dans PowerShell (toujours en administrateur) :
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 .\install-claude-gateway.ps1
 ```
 
-Le script demande un identifiant et un hostname public par session. Il génère les mots de passe des passerelles et crée les fichiers dans :
-
-```text
-%USERPROFILE%\claude-gateway
+*(Si Docker Desktop n'est pas encore installé sur votre PC, ajoutez le paramètre `-InstallDocker` pour qu'il soit installé automatiquement via `winget` :)*
+```powershell
+.\install-claude-gateway.ps1 -InstallDocker
 ```
 
-Vérifier l’état :
+#### Ce que le script va vous demander :
+1. **Nombre d'amis** : De 1 à 20 (chacun aura son propre navigateur isolé).
+2. **Identifiant court** pour chaque ami (ex: `alice`, `bob`).
+3. **Nom DNS public** pour chaque ami (ex: `alice-claude.duckdns.org`).
+
+Le script génère automatiquement des mots de passe sécurisés, crée la configuration Docker Compose et Caddy, applique les droits de sécurité NTFS stricts sur le fichier `.env`, et démarre les conteneurs !
+
+---
+
+### 🛠️ Commandes utiles (Administration)
+
+Tous les fichiers de configuration sont générés dans `%USERPROFILE%\claude-gateway`.
 
 ```powershell
+# Se rendre dans le dossier de configuration
 cd "$env:USERPROFILE\claude-gateway"
+
+# Vérifier que tous les conteneurs tournent
 docker compose ps
+
+# Voir les logs de Caddy et la génération des certificats HTTPS
 docker compose logs -f caddy
+
+# Mettre à jour les conteneurs (Firefox et Caddy)
+docker compose pull
+docker compose up -d
+
+# Arrêter la passerelle
+docker compose down
 ```
 
-### Routeur et DNS
+---
 
-Réserve une adresse IP locale fixe pour le PC Windows, puis redirige uniquement :
+## 📱 Méthode 2 — Android et Termux
 
-```text
-TCP 80  -> PC Windows : 80
-TCP 443 -> PC Windows : 443
-```
+Cette méthode transforme votre smartphone Android (connecté en 4G/5G) en passerelle web à la demande. Elle utilise Chromium dans un environnement Linux virtuel (Debian proot) et un tunnel sécurisé Cloudflare. **Aucune configuration de box n'est requise !**
 
-Le nom DNS doit être le nom complet configuré chez le fournisseur DDNS. Vérifie-le avec :
+> [!CAUTION]
+> **N'installez JAMAIS Termux depuis le Google Play Store !**  
+> La version du Play Store est abandonnée depuis 2020 et ses dépôts de paquets sont hors-service. Vous devez obligatoirement installer Termux depuis **[F-Droid](https://f-droid.org/fr/packages/com.termux/)** ou depuis les **[Releases GitHub officielles](https://github.com/termux/termux-app/releases)**.
 
-```powershell
-Resolve-DnsName ton-hote.example.net -Server 1.1.1.1
-```
+---
 
-Teste l’URL depuis un réseau extérieur, par exemple la 4G, et non uniquement depuis le Wi-Fi de la maison :
+### 🚀 Étape 1 : Installer et configurer la passerelle
 
-```text
-https://ton-hote.example.net
-```
-
-### Presse-papier et fichiers
-
-Le script désactive volontairement le presse-papier et le gestionnaire de fichiers par défaut.
-
-Pour le presse-papier, dans le `compose.yml` généré, remplacer :
-
-```yaml
-WEB_HOST_CLIPBOARD_SYNC: "0"
-```
-
-par :
-
-```yaml
-WEB_HOST_CLIPBOARD_SYNC: "1"
-```
-
-Puis recréer les conteneurs :
-
-```powershell
-cd "$env:USERPROFILE\claude-gateway"
-docker compose up -d --force-recreate
-```
-
-Le navigateur utilisé pour accéder à l’interface doit autoriser le presse-papier sur le domaine HTTPS.
-
-Pour des transferts de fichiers ponctuels, le gestionnaire peut être activé avec prudence :
-
-```yaml
-WEB_FILE_MANAGER: "1"
-WEB_FILE_MANAGER_ALLOWED_PATHS: "/config"
-```
-
-Garde toujours :
-
-```yaml
-WEB_TERMINAL: "0"
-```
-
-## Méthode 2 — Android et Termux
-
-Cette méthode est expérimentale et vise une seule session Chromium partagée. Pour le guide détaillé complet, consulte [README-TERMUX.md](README-TERMUX.md).
-
-### Limitations
-
-- une seule session de navigateur partagée ;
-- forte consommation de batterie, mémoire et données mobiles ;
-- Termux doit rester actif et exclu de l’optimisation batterie ;
-- le Quick Tunnel donne une URL temporaire qui change après redémarrage ;
-- le téléphone est généralement derrière un CGNAT, donc le DDNS du routeur n’est pas utilisé.
-
-### Installation
-
-Installer Termux depuis une source fiable, puis copier `termux-browser-gateway.sh` dans le dossier personnel de Termux :
+1. Installez **Termux** depuis F-Droid ou GitHub.
+2. Ouvrez Termux sur votre smartphone et collez cette commande unique :
 
 ```bash
-chmod 700 "$HOME/termux-browser-gateway.sh"
+pkg update && pkg install -y git
+git clone https://github.com/KLM-corporation/ClaudeCampusUnlock.git
+cd ClaudeCampusUnlock
+chmod +x termux-browser-gateway.sh
 ./termux-browser-gateway.sh install
 ```
 
-Démarrer :
+Le script installe automatiquement Debian, Chromium, noVNC, Nginx et Cloudflared, puis vous invite à choisir un identifiant et un mot de passe pour protéger votre passerelle.
+
+---
+
+### 🌐 Étape 2 : Lancer la passerelle
+
+Quand vous souhaitez ouvrir l'accès à votre ami depuis le campus :
 
 ```bash
-termux-wake-lock
+cd ~/ClaudeCampusUnlock
 ./termux-browser-gateway.sh start
 ```
 
-Le terminal affiche une URL `trycloudflare.com`. L’utilisateur distant ouvre cette URL, puis si nécessaire :
-
+Le terminal affiche une URL Cloudflare temporaire du type :
 ```text
-/vnc.html?autoconnect=1
+https://xxxx-xxxx-xxxx.trycloudflare.com
 ```
 
-Arrêter :
+Transmettez cette URL à votre ami. Pour une connexion immédiate au bureau virtuel, votre ami ouvre :
+```text
+https://xxxx-xxxx-xxxx.trycloudflare.com/vnc.html?autoconnect=1
+```
 
+Pour stopper la passerelle, faites simplement `Ctrl+C` dans Termux ou tapez :
 ```bash
 ./termux-browser-gateway.sh stop
-termux-wake-unlock
 ```
 
-Le mot de passe protège l’interface noVNC. Ne partage pas l’URL et le mot de passe publiquement.
+Pour plus d'informations détaillées sur la méthode Termux, consultez le guide dédié : **[README-TERMUX.md](README-TERMUX.md)**.
 
-## Dépannage
+---
 
-### Docker Desktop reste bloqué
+## 👥 Guide côté Ami / Client (Sur le Campus)
 
-Vérifier :
+Voici ce que doit faire la personne distante connectée au réseau filtré du campus :
 
-```powershell
-wsl --status
-wsl -l -v
-docker info
-```
+1. **Ouvrir son navigateur habituel** (Chrome, Safari, Firefox, Edge) sur son ordinateur portable ou sa tablette.
+2. **Accéder à l'URL** fournie par l'hôte (ex: `https://alice-claude.duckdns.org`).
+3. **S'authentifier** : Une boîte de dialogue du navigateur demande l'identifiant et le mot de passe de la passerelle définis lors de l'installation.
+4. **Naviguer** : L'interface graphique du navigateur distant apparaît instantanément dans l'onglet avec Claude.ai déjà prêt !
+5. **Connexion Claude** : L'ami se connecte à **son propre compte Claude personnel**.
 
-Si `docker info` ne répond pas, Docker Desktop ou son moteur Linux n’est pas démarré. Vérifie également la virtualisation matérielle et les fonctionnalités WSL2.
+> [!TIP]
+> **Presse-papier (Copier/Coller)** :  
+> - Sous la méthode Windows (Docker), le presse-papier est synchronisable directement dans les paramètres du navigateur distant.
+> - Sous la méthode Termux (noVNC), ouvrez le volet latéral gauche de noVNC pour coller du texte entre votre machine locale et le bureau distant.
 
-### Le DNS ne répond pas
+---
 
-```powershell
-Resolve-DnsName ton-hote.example.net -Server 1.1.1.1
-ipconfig /flushdns
-```
+## 🔒 Sécurité et Bonnes Pratiques
 
-Vérifie que l’adresse retournée correspond à l’adresse IP publique actuelle.
+- **Comptes personnels** : Chaque utilisateur doit impérativement se connecter avec son propre compte Claude. Ne partagez jamais de cookies, tokens ou mots de passe de votre propre compte.
+- **Confidentialité du fichier `.env`** : Le fichier `.env` sur le PC Windows contient les mots de passe d'accès. Il est protégé localement avec des ACLs Windows strictes et est ignoré par Git via le [`.gitignore`](.gitignore). Ne le commitez jamais !
+- **Cercle de confiance** : Tout le trafic sortant de la passerelle utilise l'adresse IP publique de votre domicile ou de votre forfait 4G. Ne donnez l'accès qu'à des personnes de confiance.
+- Consultez notre politique de sécurité détaillée dans [SECURITY.md](SECURITY.md).
 
-### Logs Windows
+---
 
-```powershell
-cd "$env:USERPROFILE\claude-gateway"
-docker compose logs --tail 100 caddy
-docker compose logs --tail 100 alice-firefox
-```
+## ❓ FAQ & Dépannage
 
-### Logs Termux
+<details>
+<summary><b>1. Caddy n'obtient pas de certificat SSL (HTTPS en erreur)</b></summary>
 
-```bash
-proot-distro login debian -- bash -lc 'cat /root/claude-browser-logs/*.log'
-```
+- Vérifiez que votre nom DuckDNS pointe bien vers votre adresse IP publique actuelle.
+- Vérifiez avec `ipconfig` que l'IP locale de votre PC n'a pas changé.
+- Testez la redirection des ports 80 et 443 depuis l'extérieur (par exemple en 4G sur votre téléphone).
+- Consultez les logs Caddy : `cd %USERPROFILE%\claude-gateway && docker compose logs -f caddy`.
+</details>
 
-## Publication sur GitHub
+<details>
+<summary><b>2. Ma box est en CGNAT (ports non redirigeables)</b></summary>
 
-Le dépôt ne doit contenir aucun secret. Depuis une machine avec GitHub CLI authentifié :
+Certaines connexions (comme les box 4G/5G ou certains abonnements fibre) partagent une même adresse IP IPv4 entre plusieurs abonnés (CGNAT). Si c'est votre cas, la redirection de ports ne fonctionnera pas. Utilisez plutôt la [Méthode 2 (Termux + Cloudflare Tunnel)](#-méthode-2--android-et-termux) qui traverse nativement tous les CGNAT sans ouvrir de port.
+</details>
 
-```bash
-gh auth login
-gh repo create ClaudeCampusUnlock --public --source=. --remote=origin --push
-```
+<details>
+<summary><b>3. Docker Desktop ne démarre pas sous Windows</b></summary>
 
-Sinon, crée un dépôt vide sur GitHub puis :
+- Assurez-vous que la virtualisation matérielle (VT-x / AMD-V) est bien activée dans le BIOS de votre ordinateur.
+- Vérifiez l'état de WSL2 avec la commande `wsl --status`.
+- Mettez à jour WSL avec `wsl --update`.
+</details>
 
-```bash
-git branch -M main
-git remote add origin https://github.com/KLM-corporation/ClaudeCampusUnlock.git
-git push -u origin main
-```
+<details>
+<summary><b>4. Termux se coupe en arrière-plan sur Android</b></summary>
 
-N’insère jamais un token dans une URL Git et ne partage jamais un token dans une conversation.
+Android tue les applications en arrière-plan pour économiser la batterie. Pour éviter cela :
+- Allez dans les paramètres de votre téléphone > *Applications* > *Termux* > *Batterie* > Sélectionnez **Non restreinte**.
+- Le script active automatiquement `termux-wake-lock` pour empêcher la mise en veille du CPU pendant l'exécution.
+</details>
+
+---
+
+## 📄 Licence
+
+Ce projet est distribué sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus d'informations.

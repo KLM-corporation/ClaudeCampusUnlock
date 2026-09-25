@@ -313,6 +313,28 @@ if ($friends.Count -eq 1) {
     }
 }
 
+$composeContent = @"
+services:
+$($serviceBlocks -join "`n")
+  caddy:
+    image: caddy:2
+    container_name: claude-gateway-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "./Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "caddy_data:/data"
+      - "caddy_config:/config"
+    depends_on:
+$((($friends | ForEach-Object { "      - $($_.Container)" }) -join "`n"))
+
+volumes:
+  caddy_data:
+  caddy_config:
+"@
+
 $caddyContent = @"
 # Caddy obtient automatiquement le certificat HTTPS pour $publicHost.
 # Tous les amis utilisent la meme URL unique : https://$publicHost

@@ -1,0 +1,403 @@
+#requires -Version 5.1
+<##
+.SYNOPSIS
+    Installe une passerelle web privee avec un navigateur Firefox isole par ami.
+
+.DESCRIPTION
+    Le script prepare Docker Compose avec :
+      - un conteneur jlesage/firefox par ami ;
+      - un profil Firefox persistant et separe pour chaque ami ;
+      - Caddy comme reverse proxy HTTPS ;
+      - une authentification propre a chaque conteneur.
+
+    Le routeur n'est pas configure automatiquement, car la procedure depend
+    de sa marque et de son modele. Les ports 80 et 443 doivent etre rediriges
+    vers le PC Windows qui execute Docker Desktop.
+
+    Le script ne demande ni ne stocke de mot de passe Claude. Chaque ami se
+    connecte a son propre compte Claude dans son propre navigateur distant.
+
+.EXAMPLE
+    Set-ExecutionPolicy -Scope Process Bypass
+    .\install-claude-gateway.ps1 -InstallDocker
+
+.EXAMPLE
+    .\install-claude-gateway.ps1
+#>
+
+[CmdletBinding()]
+param(
+    [string]$InstallDir = (Join-Path $env:USERPROFILE "claude-gateway"),
+    [switch]$InstallDocker
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+function Write-Info {
+    param([string]$Message)
+    Write-Host "[INFO] $Message" -ForegroundColor Cyan
+}
+
+function Write-WarningMessage {
+    param([string]$Message)
+    Write-Host "[ATTENTION] $Message" -ForegroundColor Yellow
+}
+
+function Test-CommandExists {
+    param([Parameter(Mandatory)][string]$Name)
+    return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function New-RandomPassword {
+    param([int]$Length = 24)
+
+    # Alphabet volontairement limite aux lettres et chiffres pour eviter les
+    # problemes de guillemets ou de caracteres speciaux dans .env.
+    $alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $bytes = New-Object byte[] $Length
+        $rng.GetBytes($bytes)
+    }
+    finally {
+        $rng.Dispose()
+    }
+
+    $characters = foreach ($byte in $bytes) {
+        $alphabet[$byte % $alphabet.Length]
+    }
+    return (-join $characters)
+}
+
+function Normalize-Id {
+    param([string]$Value)
+
+    $result = $Value.Trim().ToLowerInvariant()
+    $result = $result -replace "[^a-z0-9-]", "-"
+    $result = $result.Trim("-")
+
+    if ([string]::IsNullOrWhiteSpace($result)) {
+        throw "L'identifiant ne peut pas etre vide."
+    }
+
+    if ($result[0] -match "[0-9]") {
+        $result = "ami-$result"
+    }
+
+    return $result
+}
+
+function Normalize-Hostname {
+    param([string]$Value)
+
+    $result = $Value.Trim().ToLowerInvariant()
+    $result = $result -replace "^https?://", ""
+    $result = $result.TrimEnd("/")
+
+    if ($result.Contains("/") -or $result.Contains(":")) {
+        throw "Entre uniquement un nom DNS, sans https://, chemin ou port."
+    }
+
+    # Nom DNS public classique, par exemple ami1.exemple.duckdns.org.
+    $dnsPattern = "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+    if ($result -notmatch $dnsPattern) {
+        throw "Nom DNS invalide : $result"
+    }
+
+    return $result
+}
+
+function Protect-SecretFile {
+    param([Parameter(Mandatory)][string]$Path)
+
+    try {
+        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $acl = Get-Acl -LiteralPath $Path
+        $acl.SetAccessRuleProtection($true, $false)
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $currentUser,
+            "FullControl",
+            "Allow"
+        )
+        $acl.SetAccessRule($rule)
+        Set-Acl -LiteralPath $Path -AclObject $acl
+        attrib +h $Path 2>$null | Out-Null
+    }
+    catch {
+        Write-WarningMessage "Impossible de restreindre automatiquement les droits de $Path. Garde ce fichier prive."
+    }
+}
+
+function Ensure-Docker {
+    if (-not (Test-CommandExists "docker")) {
+        if (-not $InstallDocker) {
+            throw "Docker Desktop n'est pas installe. Relance avec -InstallDocker, ou installe Docker Desktop manuellement puis relance le script."
+        }
+
+        if (-not (Test-CommandExists "winget")) {
+            throw "winget est introuvable. Installe Docker Desktop manuellement depuis https://www.docker.com/products/docker-desktop/"
+        }
+
+        Write-Info "Installation de Docker Desktop via winget..."
+        winget install --id Docker.DockerDesktop --exact --accept-source-agreements --accept-package-agreements
+        if ($LASTEXITCODE -ne 0) {
+            throw "L'installation de Docker Desktop a echoue."
+        }
+
+        throw "Docker Desktop vient d'etre installe. Redemarre Windows si necessaire, demarre Docker Desktop, puis relance ce script sans -InstallDocker."
+    }
+
+    if (-not (Test-CommandExists "docker")) {
+        throw "La commande docker est introuvable."
+    }
+
+    docker compose version *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Docker Compose est indisponible. Mets a jour Docker Desktop."
+    }
+
+    docker info *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Le moteur Docker ne repond pas. Demarre Docker Desktop, attends qu'il soit pret, puis relance le script."
+    }
+}
+
+Write-Host ""
+Write-Host "=== Passerelle Claude privee - Windows / Docker ===" -ForegroundColor Green
+Write-Host ""
+Write-WarningMessage "Cette passerelle donnera a tes amis un acces Internet sortant par ta connexion maison. Ne la partage qu'avec des personnes de confiance."
+Write-WarningMessage "Le script ne configure pas le routeur et ne demande jamais de mot de passe Claude."
+Write-Host ""
+
+Ensure-Docker
+
+$countText = Read-Host "Combien d'amis veux-tu configurer (1 a 20) ?"
+[int]$friendCount = 0
+if (-not [int]::TryParse($countText, [ref]$friendCount) -or $friendCount -lt 1 -or $friendCount -gt 20) {
+    throw "Le nombre d'amis doit etre compris entre 1 et 20."
+}
+
+$friends = @()
+$usedIds = @{}
+$usedHosts = @{}
+
+for ($index = 1; $index -le $friendCount; $index++) {
+    Write-Host ""
+    Write-Host "--- Ami $index / $friendCount ---" -ForegroundColor Green
+
+    do {
+        $rawId = Read-Host "Identifiant court (exemple : alice)"
+        $id = Normalize-Id $rawId
+        if ($usedIds.ContainsKey($id)) {
+            Write-WarningMessage "Cet identifiant est deja utilise."
+            $id = $null
+        }
+    } while ([string]::IsNullOrWhiteSpace($id))
+
+    do {
+        $rawHost = Read-Host "Nom DNS public pour $id (exemple : alice.ton-dyndns.org)"
+        try {
+            $publicHost = Normalize-Hostname $rawHost
+        }
+        catch {
+            Write-WarningMessage $_.Exception.Message
+            $publicHost = $null
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($publicHost) -and $usedHosts.ContainsKey($publicHost)) {
+            Write-WarningMessage "Ce nom DNS est deja utilise. Utilise un nom different par ami."
+            $publicHost = $null
+        }
+    } while ([string]::IsNullOrWhiteSpace($publicHost))
+
+    $password = New-RandomPassword -Length 24
+    $container = "$id-firefox"
+    $envName = (($id.ToUpperInvariant() -replace "[^A-Z0-9]", "_") + "_PASSWORD")
+
+    $usedIds[$id] = $true
+    $usedHosts[$publicHost] = $true
+
+    $friends += [PSCustomObject]@{
+        Id        = $id
+        Host      = $publicHost
+        Container = $container
+        EnvName   = $envName
+        Username  = $id
+        Password  = $password
+    }
+}
+
+New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $InstallDir "data") -Force | Out-Null
+
+$serviceBlocks = New-Object System.Collections.Generic.List[string]
+$caddyBlocks = New-Object System.Collections.Generic.List[string]
+$envLines = New-Object System.Collections.Generic.List[string]
+
+foreach ($friend in $friends) {
+    $placeholder = '${' + $friend.EnvName + '}'
+
+    $serviceBlocks.Add(@"
+  $($friend.Container):
+    image: jlesage/firefox:latest
+    container_name: $($friend.Container)
+    restart: unless-stopped
+    environment:
+      SECURE_CONNECTION: "1"
+      WEB_AUTHENTICATION: "1"
+      WEB_AUTHENTICATION_USERNAME: "$($friend.Username)"
+      WEB_AUTHENTICATION_PASSWORD: "$placeholder"
+      FF_OPEN_URL: "https://claude.ai"
+      WEB_FILE_MANAGER: "0"
+      WEB_TERMINAL: "0"
+      WEB_HOST_CLIPBOARD_SYNC: "0"
+      TZ: "Europe/Paris"
+    volumes:
+      - "./data/$($friend.Id):/config"
+    expose:
+      - "5800"
+    shm_size: "1gb"
+"@)
+
+    $caddyBlocks.Add(@"
+$($friend.Host) {
+    reverse_proxy https://$($friend.Container):5800 {
+        transport http {
+            tls_insecure_skip_verify
+        }
+    }
+}
+"@)
+
+    $envLines.Add("$($friend.EnvName)=$($friend.Password)")
+}
+
+$composeContent = @"
+services:
+$($serviceBlocks -join "`n")
+  caddy:
+    image: caddy:2
+    container_name: claude-gateway-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "./Caddyfile:/etc/caddy/Caddyfile:ro"
+      - "caddy_data:/data"
+      - "caddy_config:/config"
+    depends_on:
+$((($friends | ForEach-Object { "      - $($_.Container)" }) -join "`n"))
+
+volumes:
+  caddy_data:
+  caddy_config:
+"@
+
+$caddyContent = @"
+# Caddy obtient automatiquement les certificats HTTPS si :
+# 1) chaque nom DNS pointe vers ton IP publique ;
+# 2) les ports TCP 80 et 443 sont rediriges vers ce PC ;
+# 3) le pare-feu et le fournisseur Internet les autorisent.
+#
+# Le tls_insecure_skip_verify concerne uniquement le certificat interne
+# auto-signe entre Caddy et les conteneurs Firefox sur le reseau Docker.
+
+$($caddyBlocks -join "`n")
+"@
+
+$envContent = @"
+# Fichier sensible : mots de passe d'acces aux navigateurs distants.
+# Ne le partage pas et ne le publie jamais.
+$($envLines -join "`n")
+"@
+
+$composePath = Join-Path $InstallDir "compose.yml"
+$caddyPath = Join-Path $InstallDir "Caddyfile"
+$envPath = Join-Path $InstallDir ".env"
+$gitignorePath = Join-Path $InstallDir ".gitignore"
+$routerGuidePath = Join-Path $InstallDir "CONFIGURATION-ROUTEUR.txt"
+
+Set-Content -LiteralPath $composePath -Value $composeContent -Encoding UTF8
+Set-Content -LiteralPath $caddyPath -Value $caddyContent -Encoding UTF8
+Set-Content -LiteralPath $envPath -Value $envContent -Encoding UTF8
+Set-Content -LiteralPath $gitignorePath -Value ".env`ndata/`n" -Encoding UTF8
+
+Protect-SecretFile -Path $envPath
+
+$routerGuide = @"
+CONFIGURATION A FAIRE SUR LE ROUTEUR
+====================================
+
+1. Reserve une adresse IP locale fixe pour ce PC Windows.
+2. Redirige uniquement :
+      TCP 80  -> IP_LOCALE_DU_PC:80
+      TCP 443 -> IP_LOCALE_DU_PC:443
+3. Ne redirige pas les ports 5800, 5900 ou 3389.
+4. Verifie que chaque nom DNS indique pendant l'installation resout vers
+   ton adresse IP publique actuelle.
+5. Si ton operateur utilise un CGNAT, la redirection de ports ne fonctionnera
+   probablement pas. Il faudra alors utiliser un tunnel sortant.
+
+TEST LOCAL
+==========
+Depuis ce PC, lance :
+    docker compose ps
+    docker compose logs -f caddy
+
+Une fois le routeur et le DNS configures, teste chaque URL depuis un reseau
+exterieur a ta maison, pas uniquement depuis le Wi-Fi domestique.
+
+MAINTENANCE
+===========
+Mise a jour des images :
+    docker compose pull
+    docker compose up -d
+
+Arret :
+    docker compose down
+"@
+Set-Content -LiteralPath $routerGuidePath -Value $routerGuide -Encoding UTF8
+
+Push-Location $InstallDir
+try {
+    Write-Info "Telechargement des images Docker..."
+    docker compose pull
+    if ($LASTEXITCODE -ne 0) {
+        throw "Le telechargement des images Docker a echoue."
+    }
+
+    Write-Info "Demarrage des conteneurs..."
+    docker compose up -d
+    if ($LASTEXITCODE -ne 0) {
+        throw "Le demarrage des conteneurs a echoue."
+    }
+}
+finally {
+    Pop-Location
+}
+
+Write-Host ""
+Write-Host "=== Installation locale terminee ===" -ForegroundColor Green
+Write-Host "Fichiers crees dans : $InstallDir"
+Write-Host ""
+Write-WarningMessage "Les URLs ne fonctionneront depuis l'exterieur qu'apres la configuration du routeur et du DNS."
+Write-WarningMessage "Ne partage pas le fichier .env. Il contient les mots de passe des passerelles."
+Write-Host ""
+Write-Host "Acces a transmettre aux amis :" -ForegroundColor Green
+foreach ($friend in $friends) {
+    Write-Host "  Ami : $($friend.Id)"
+    Write-Host "  URL : https://$($friend.Host)"
+    Write-Host "  Identifiant passerelle : $($friend.Username)"
+    Write-Host "  Mot de passe passerelle : $($friend.Password)"
+    Write-Host ""
+}
+
+Write-Host "Commandes utiles :" -ForegroundColor Green
+Write-Host "  cd `"$InstallDir`""
+Write-Host "  docker compose ps"
+Write-Host "  docker compose logs -f caddy"
+Write-Host "  docker compose down"
+Write-Host ""
+Write-Host "Chaque ami doit ensuite se connecter avec son propre compte Claude dans son Firefox distant." -ForegroundColor Cyan

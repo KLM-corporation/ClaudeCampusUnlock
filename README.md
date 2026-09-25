@@ -98,12 +98,12 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/KLM-corporation/Claude
 
 ### 🌐 Étape 2 : Créer un nom DNS gratuit (DuckDNS en 2 minutes)
 
-Caddy a besoin d'un nom de domaine public pour générer automatiquement un certificat HTTPS gratuit (Let's Encrypt) :
+Caddy a besoin d'un nom de domaine public pour générer automatiquement un certificat HTTPS gratuit (Let's Encrypt). **Un seul domaine suffit pour tous vos amis** :
 
-1. Rendez-vous sur [DuckDNS.org](https://www.duckdns.org) et connectez-vous (avec un compte Google, GitHub ou Reddit).
+1. Rendez-vous sur [DuckDNS.org](https://www.duckdns.org) et connectez-vous (Google, GitHub ou Reddit).
 2. Dans le champ **sub domain**, choisissez un nom (par exemple `relais-claude`) et cliquez sur **add domain**.
 3. DuckDNS détecte automatiquement votre adresse IP publique actuelle.
-4. Si vous configurez plusieurs amis, vous pouvez créer plusieurs sous-domaines ou utiliser des préfixes (ex: `alice-claude.duckdns.org`, `bob-claude.duckdns.org`).
+4. Votre domaine public est prêt : `relais-claude.duckdns.org`. C'est cette adresse unique que tous vos amis utiliseront !
 
 ---
 
@@ -151,11 +151,18 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 ```
 
 #### Ce que le script va vous demander :
-1. **Nombre d'amis** : De 1 à 20 (chacun aura son propre navigateur isolé).
-2. **Identifiant court** pour chaque ami (ex: `alice`, `bob`).
-3. **Nom DNS public** pour chaque ami (ex: `alice-claude.duckdns.org`).
+1. **Nom DNS public général** : Votre domaine DuckDNS unique (ex: `relais-claude.duckdns.org`).
+2. **Nombre d'amis** : De 1 à 20 (chacun aura son propre navigateur isolé).
+3. **Pour chaque ami** :
+   - Son identifiant court (ex: `gabi`, `maxim`).
+   - Son mot de passe : vous pouvez taper un mot de passe personnalisé (ex: `123`) ou appuyer sur **Entrée** pour en générer un aléatoirement.
 
-Le script génère automatiquement des mots de passe sécurisés, crée la configuration Docker Compose et Caddy, applique les droits de sécurité NTFS stricts sur le fichier `.env`, et démarre les conteneurs !
+#### 💡 Comment fonctionne l'aiguillage intelligent (Smart Auth Routing) :
+- Tous vos amis utilisent la **même et unique adresse web** : `https://relais-claude.duckdns.org`.
+- Caddy protège l'entrée et filtre les accès.
+- Quand **Gabi** s'authentifie, Caddy le connecte directement à sa session Firefox personnelle.
+- Quand **Maxim** s'authentifie, Caddy le connecte à sa propre session.
+- Chaque ami dispose d'un conteneur dédié, avec ses propres cookies et sessions Claude totalement isolés.
 
 ---
 
@@ -243,9 +250,9 @@ Pour plus d'informations détaillées sur la méthode Termux, consultez le guide
 Voici ce que doit faire la personne distante connectée au réseau filtré du campus :
 
 1. **Ouvrir son navigateur habituel** (Chrome, Safari, Firefox, Edge) sur son ordinateur portable ou sa tablette.
-2. **Accéder à l'URL** fournie par l'hôte (ex: `https://alice-claude.duckdns.org`).
-3. **S'authentifier** : Une boîte de dialogue du navigateur demande l'identifiant et le mot de passe de la passerelle définis lors de l'installation.
-4. **Naviguer** : L'interface graphique du navigateur distant apparaît instantanément dans l'onglet avec Claude.ai déjà prêt !
+2. **Accéder à l'URL unique** fournie par l'hôte (ex: `https://relais-claude.duckdns.org`).
+3. **S'authentifier** : Une boîte de dialogue standard du navigateur s'ouvre. L'ami saisit son identifiant (ex: `gabi`) et son mot de passe (ex: `123`).
+4. **Aiguillage automatique** : Caddy le connecte instantanément à son navigateur Firefox personnel avec Claude.ai déjà prêt !
 5. **Connexion Claude** : L'ami se connecte à **son propre compte Claude personnel**.
 
 > [!TIP]

@@ -182,6 +182,17 @@ Write-Host ""
 
 Ensure-Docker
 
+do {
+    $rawHost = Read-Host "Nom DNS public general (exemple : mon-relais.duckdns.org)"
+    try {
+        $publicHost = Normalize-Hostname $rawHost
+    }
+    catch {
+        Write-WarningMessage $_.Exception.Message
+        $publicHost = $null
+    }
+} while ([string]::IsNullOrWhiteSpace($publicHost))
+
 $countText = Read-Host "Combien d'amis veux-tu configurer (1 a 20) ?"
 [int]$friendCount = 0
 if (-not [int]::TryParse($countText, [ref]$friendCount) -or $friendCount -lt 1 -or $friendCount -gt 20) {
@@ -190,14 +201,13 @@ if (-not [int]::TryParse($countText, [ref]$friendCount) -or $friendCount -lt 1 -
 
 $friends = @()
 $usedIds = @{}
-$usedHosts = @{}
 
 for ($index = 1; $index -le $friendCount; $index++) {
     Write-Host ""
     Write-Host "--- Ami $index / $friendCount ---" -ForegroundColor Green
 
     do {
-        $rawId = Read-Host "Identifiant court (exemple : alice)"
+        $rawId = Read-Host "Identifiant court (exemple : gabi)"
         try {
             $id = Normalize-Id $rawId
         }
@@ -212,36 +222,32 @@ for ($index = 1; $index -le $friendCount; $index++) {
         }
     } while ([string]::IsNullOrWhiteSpace($id))
 
-    do {
-        $rawHost = Read-Host "Nom DNS public pour $id (exemple : alice.ton-dyndns.org)"
-        try {
-            $publicHost = Normalize-Hostname $rawHost
-        }
-        catch {
-            Write-WarningMessage $_.Exception.Message
-            $publicHost = $null
-        }
+    $rawPass = Read-Host "Mot de passe pour $id (Entree pour generer aleatoirement)"
+    if ([string]::IsNullOrWhiteSpace($rawPass)) {
+        $password = New-RandomPassword -Length 24
+        Write-Info "Mot de passe genere automatiquement pour $id : $password"
+    } else {
+        $password = $rawPass.Trim()
+    }
 
-        if (-not [string]::IsNullOrWhiteSpace($publicHost) -and $usedHosts.ContainsKey($publicHost)) {
-            Write-WarningMessage "Ce nom DNS est deja utilise. Utilise un nom different par ami."
-            $publicHost = $null
-        }
-    } while ([string]::IsNullOrWhiteSpace($publicHost))
+    Write-Info "Generation du hash securise pour $id..."
+    $hashOutput = docker run --rm caddy:2 caddy hash-password --plaintext "$password"
+    $bcryptHash = $hashOutput.Trim()
+    if ([string]::IsNullOrWhiteSpace($bcryptHash) -or -not $bcryptHash.StartsWith("`$2")) {
+        throw "La generation du hash de mot de passe a echoue."
+    }
 
-    $password = New-RandomPassword -Length 24
     $container = "$id-firefox"
     $envName = (($id.ToUpperInvariant() -replace "[^A-Z0-9]", "_") + "_PASSWORD")
-
     $usedIds[$id] = $true
-    $usedHosts[$publicHost] = $true
 
     $friends += [PSCustomObject]@{
-        Id        = $id
-        Host      = $publicHost
-        Container = $container
-        EnvName   = $envName
-        Username  = $id
-        Password  = $password
+        Id         = $id
+        Username   = $id
+        Password   = $password
+        BcryptHash = $bcryptHash
+        Container  = $container
+        EnvName    = $envName
     }
 }
 
@@ -249,12 +255,15 @@ New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $InstallDir "data") -Force | Out-Null
 
 $serviceBlocks = New-Object System.Collections.Generic.List[string]
-$caddyBlocks = New-Object System.Collections.Generic.List[string]
+$basicAuthLines = New-Object System.Collections.Generic.List[string]
+$routingBlocks = New-Object System.Collections.Generic.List[string]
 $envLines = New-Object System.Collections.Generic.List[string]
 
-foreach ($friend in $friends) {
-    $placeholder = '${' + $friend.EnvName + '}'
+$envLines.Add("# Configuration de la passerelle ClaudeCampusUnlock")
+$envLines.Add("# URL publique unique : https://$publicHost")
+$envLines.Add("")
 
+foreach ($friend in $friends) {
     $serviceBlocks.Add(@"
   $($friend.Container):
     image: jlesage/firefox:latest
@@ -262,9 +271,7 @@ foreach ($friend in $friends) {
     restart: unless-stopped
     environment:
       SECURE_CONNECTION: "1"
-      WEB_AUTHENTICATION: "1"
-      WEB_AUTHENTICATION_USERNAME: "$($friend.Username)"
-      WEB_AUTHENTICATION_PASSWORD: "$placeholder"
+      WEB_AUTHENTICATION: "0"
       FF_OPEN_URL: "https://claude.ai"
       WEB_FILE_MANAGER: "0"
       WEB_TERMINAL: "0"
@@ -277,52 +284,47 @@ foreach ($friend in $friends) {
     shm_size: "1gb"
 "@)
 
-    $caddyBlocks.Add(@"
-$($friend.Host) {
-    reverse_proxy https://$($friend.Container):5800 {
+    $basicAuthLines.Add("        $($friend.Username) $($friend.BcryptHash)")
+    $envLines.Add("# Ami : $($friend.Id) | Identifiant : $($friend.Username) | Mot de passe : $($friend.Password)")
+    $envLines.Add("$($friend.EnvName)=$($friend.Password)")
+}
+
+if ($friends.Count -eq 1) {
+    $singleFriend = $friends[0]
+    $routingBlocks.Add(@"
+    reverse_proxy https://$($singleFriend.Container):5800 {
         transport http {
             tls_insecure_skip_verify
         }
     }
-}
 "@)
-
-    $envLines.Add("# Ami : $($friend.Id) | URL : https://$($friend.Host) | Utilisateur : $($friend.Username)")
-    $envLines.Add("$($friend.EnvName)=$($friend.Password)")
+} else {
+    foreach ($friend in $friends) {
+        $routingBlocks.Add(@"
+    @is_$($friend.Id) expression {http.auth.user.id} == '$($friend.Username)'
+    handle @is_$($friend.Id) {
+        reverse_proxy https://$($friend.Container):5800 {
+            transport http {
+                tls_insecure_skip_verify
+            }
+        }
+    }
+"@)
+    }
 }
-
-$composeContent = @"
-services:
-$($serviceBlocks -join "`n")
-  caddy:
-    image: caddy:2
-    container_name: claude-gateway-caddy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - "./Caddyfile:/etc/caddy/Caddyfile:ro"
-      - "caddy_data:/data"
-      - "caddy_config:/config"
-    depends_on:
-$((($friends | ForEach-Object { "      - $($_.Container)" }) -join "`n"))
-
-volumes:
-  caddy_data:
-  caddy_config:
-"@
 
 $caddyContent = @"
-# Caddy obtient automatiquement les certificats HTTPS si :
-# 1) chaque nom DNS pointe vers ton IP publique ;
-# 2) les ports TCP 80 et 443 sont rediriges vers ce PC ;
-# 3) le pare-feu et le fournisseur Internet les autorisent.
-#
-# Le tls_insecure_skip_verify concerne uniquement le certificat interne
-# auto-signe entre Caddy et les conteneurs Firefox sur le reseau Docker.
+# Caddy obtient automatiquement le certificat HTTPS pour $publicHost.
+# Tous les amis utilisent la meme URL unique : https://$publicHost
+# Caddy authentifie chaque ami et l'aiguille vers son propre conteneur Firefox.
 
-$($caddyBlocks -join "`n")
+$publicHost {
+    basic_auth {
+$($basicAuthLines -join "`n")
+    }
+
+$($routingBlocks -join "`n")
+}
 "@
 
 $envContent = @"
@@ -353,10 +355,17 @@ CONFIGURATION A FAIRE SUR LE ROUTEUR
       TCP 80  -> IP_LOCALE_DU_PC:80
       TCP 443 -> IP_LOCALE_DU_PC:443
 3. Ne redirige pas les ports 5800, 5900 ou 3389.
-4. Verifie que chaque nom DNS indique pendant l'installation resout vers
-   ton adresse IP publique actuelle.
+4. Verifie que le nom DNS ($publicHost) resout vers ton adresse IP publique actuelle.
 5. Si ton operateur utilise un CGNAT, la redirection de ports ne fonctionnera
-   probablement pas. Il faudra alors utiliser un tunnel sortant.
+   probablement pas. Il faudra alors utiliser un tunnel sortant (Termux / Cloudflare).
+
+ACCES CLIENT (URL UNIQUE)
+=========================
+Tous les amis ouvrent exactement la MEME adresse web :
+    https://$publicHost
+
+Lors de l'invite de connexion, chacun entre son propre identifiant et son mot de passe.
+Caddy authentifie la personne et l'aiguille automatiquement vers son navigateur Firefox personnel !
 
 TEST LOCAL
 ==========
@@ -364,8 +373,8 @@ Depuis ce PC, lance :
     docker compose ps
     docker compose logs -f caddy
 
-Une fois le routeur et le DNS configures, teste chaque URL depuis un reseau
-exterieur a ta maison, pas uniquement depuis le Wi-Fi domestique.
+Une fois le routeur et le DNS configures, teste l'URL depuis un reseau
+exterieur a ta maison (ex: en 4G), pas uniquement depuis le Wi-Fi domestique.
 
 MAINTENANCE
 ===========
@@ -400,15 +409,16 @@ Write-Host ""
 Write-Host "=== Installation locale terminee ===" -ForegroundColor Green
 Write-Host "Fichiers crees dans : $InstallDir"
 Write-Host ""
-Write-WarningMessage "Les URLs ne fonctionneront depuis l'exterieur qu'apres la configuration du routeur et du DNS."
+Write-WarningMessage "L'URL ne fonctionnera depuis l'exterieur qu'apres la configuration du routeur et du DNS."
 Write-WarningMessage "Ne partage pas le fichier .env. Il contient les mots de passe des passerelles."
 Write-Host ""
 Write-Host "Acces a transmettre aux amis :" -ForegroundColor Green
+Write-Host "  URL unique pour tout le monde : https://$publicHost" -ForegroundColor Cyan
+Write-Host ""
 foreach ($friend in $friends) {
-    Write-Host "  Ami : $($friend.Id)"
-    Write-Host "  URL : https://$($friend.Host)"
-    Write-Host "  Identifiant passerelle : $($friend.Username)"
-    Write-Host "  Mot de passe passerelle : $($friend.Password)"
+    Write-Host "  --- Ami : $($friend.Id) ---"
+    Write-Host "  Identifiant : $($friend.Username)"
+    Write-Host "  Mot de passe : $($friend.Password)"
     Write-Host ""
 }
 

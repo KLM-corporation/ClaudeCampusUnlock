@@ -2,16 +2,16 @@
 #
 # Passerelle navigateur distante pour Termux/Android.
 #
-# Cette version est volontairement limite a UNE session Chromium partagee.
-# Elle ne cree pas un proxy TCP ouvert : les amis controllent un navigateur
-# distant protege par authentification HTTP.
+# Cette version est volontairement limitée à UNE session Chromium partagée.
+# Elle ne crée pas un proxy TCP ouvert : les amis contrôlent un navigateur
+# distant protégé par authentification HTTP.
 #
 # Architecture :
 #   Chromium dans Debian/proot-distro -> Xvfb -> x11vnc -> noVNC
 #   -> Nginx avec authentification -> Cloudflare Quick Tunnel
 #
 # Le tunnel donne une URL publique temporaire. Pour une URL stable, il faudra
-# remplacer le Quick Tunnel par un tunnel Cloudflare nomme.
+# remplacer le Quick Tunnel par un tunnel Cloudflare nommé.
 
 set -Eeuo pipefail
 
@@ -57,6 +57,17 @@ install_dependencies() {
     info "Dépendances installées."
 }
 
+ensure_dependencies() {
+    if ! command -v curl >/dev/null 2>&1 || \
+       ! command -v nginx >/dev/null 2>&1 || \
+       ! command -v openssl >/dev/null 2>&1 || \
+       ! command -v cloudflared >/dev/null 2>&1 || \
+       ! command -v proot-distro >/dev/null 2>&1 || \
+       ! proot-distro login --shared-tmp debian -- true >/dev/null 2>&1; then
+        install_dependencies
+    fi
+}
+
 setup_auth() {
     mkdir -p "$BASE"
     chmod 700 "$BASE"
@@ -67,8 +78,8 @@ setup_auth() {
     fi
 
     printf '\n'
-    printf 'Création de l accès privé au navigateur distant.\n'
-    read -r -p 'Nom utilisateur de la passerelle [ami] : ' user
+    printf "Création de l'accès privé au navigateur distant.\n"
+    read -r -p "Nom d'utilisateur de la passerelle [ami] : " user
     user="${user:-ami}"
 
     while true; do
@@ -140,7 +151,7 @@ start_browser() {
     # sleep, puis on lance Chromium/noVNC à l'intérieur.
     proot-distro kill debian >/dev/null 2>&1 || true
 
-    info "Démarrage de Chromium, de l écran virtuel et de noVNC..."
+    info "Démarrage de Chromium, de l'écran virtuel et de noVNC..."
     proot-distro login --shared-tmp --detach debian -- bash -lc '
         set -u
         mkdir -p /root/claude-browser-logs /root/claude-gateway-profile
@@ -176,10 +187,15 @@ start_browser() {
             > /root/claude-browser-logs/x11vnc.log 2>&1 &
 
         sleep 2
-        /usr/share/novnc/utils/novnc_proxy \
-            --vnc localhost:5900 \
-            --listen 6080 \
-            > /root/claude-browser-logs/novnc.log 2>&1 &
+        if [ -x /usr/share/novnc/utils/novnc_proxy ]; then
+            /usr/share/novnc/utils/novnc_proxy \
+                --vnc localhost:5900 \
+                --listen 6080 \
+                > /root/claude-browser-logs/novnc.log 2>&1 &
+        else
+            websockify --web=/usr/share/novnc 6080 localhost:5900 \
+                > /root/claude-browser-logs/novnc.log 2>&1 &
+        fi
 
         # Maintient la session proot en vie afin que les processus graphiques
         # ne reçoivent pas SIGTERM dès la fin de la commande d installation.
@@ -211,7 +227,7 @@ stop_all() {
 
 start_all() {
     require_termux
-    install_dependencies
+    ensure_dependencies
     setup_auth
     start_browser
     start_nginx
@@ -220,8 +236,8 @@ start_all() {
     printf '\n'
     info "Le navigateur distant est prêt."
     info "Lancement du tunnel HTTPS temporaire..."
-    warn "Garde Termux ouvert et désactive l optimisation batterie pour Termux."
-    warn "L URL affichée par cloudflared changera au prochain démarrage."
+    warn "Garde Termux ouvert et désactive l'optimisation batterie pour Termux."
+    warn "L'URL affichée par cloudflared changera au prochain démarrage."
     printf '\n'
 
     trap stop_all EXIT INT TERM
@@ -247,11 +263,11 @@ usage() {
 Usage: $0 [commande]
 
 Commandes :
-  install   installe Debian, Chromium, noVNC, Nginx et cloudflared
-  start     démarre le navigateur et le tunnel HTTPS temporaire
-  stop      arrête le navigateur et Nginx
-  status    affiche l état de la passerelle
-  reset-auth recrée l utilisateur et le mot de passe
+  install    installe Debian, Chromium, noVNC, Nginx et cloudflared
+  start      démarre le navigateur et le tunnel HTTPS temporaire
+  stop       arrête le navigateur et Nginx
+  status     affiche l'état de la passerelle
+  reset-auth recrée l'utilisateur et le mot de passe
 
 Exemple :
   $0 install

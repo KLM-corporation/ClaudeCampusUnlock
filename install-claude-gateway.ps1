@@ -49,6 +49,12 @@ function Test-CommandExists {
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Test-IsAdmin {
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 function New-RandomPassword {
     param([int]$Length = 24)
 
@@ -135,6 +141,10 @@ function Ensure-Docker {
             throw "Docker Desktop n'est pas installe. Relance avec -InstallDocker, ou installe Docker Desktop manuellement puis relance le script."
         }
 
+        if (-not (Test-IsAdmin)) {
+            throw "L'installation de Docker Desktop via -InstallDocker necessite d'executer PowerShell en tant qu'administrateur."
+        }
+
         if (-not (Test-CommandExists "winget")) {
             throw "winget est introuvable. Installe Docker Desktop manuellement depuis https://www.docker.com/products/docker-desktop/"
         }
@@ -188,8 +198,15 @@ for ($index = 1; $index -le $friendCount; $index++) {
 
     do {
         $rawId = Read-Host "Identifiant court (exemple : alice)"
-        $id = Normalize-Id $rawId
-        if ($usedIds.ContainsKey($id)) {
+        try {
+            $id = Normalize-Id $rawId
+        }
+        catch {
+            Write-WarningMessage $_.Exception.Message
+            $id = $null
+        }
+
+        if ($id -and $usedIds.ContainsKey($id)) {
             Write-WarningMessage "Cet identifiant est deja utilise."
             $id = $null
         }
@@ -270,6 +287,7 @@ $($friend.Host) {
 }
 "@)
 
+    $envLines.Add("# Ami : $($friend.Id) | URL : https://$($friend.Host) | Utilisateur : $($friend.Username)")
     $envLines.Add("$($friend.EnvName)=$($friend.Password)")
 }
 
@@ -319,10 +337,10 @@ $envPath = Join-Path $InstallDir ".env"
 $gitignorePath = Join-Path $InstallDir ".gitignore"
 $routerGuidePath = Join-Path $InstallDir "CONFIGURATION-ROUTEUR.txt"
 
-Set-Content -LiteralPath $composePath -Value $composeContent -Encoding UTF8
-Set-Content -LiteralPath $caddyPath -Value $caddyContent -Encoding UTF8
-Set-Content -LiteralPath $envPath -Value $envContent -Encoding UTF8
-Set-Content -LiteralPath $gitignorePath -Value ".env`ndata/`n" -Encoding UTF8
+Set-Content -LiteralPath $composePath -Value $composeContent -Encoding UTF8 -Force
+Set-Content -LiteralPath $caddyPath -Value $caddyContent -Encoding UTF8 -Force
+Set-Content -LiteralPath $envPath -Value $envContent -Encoding UTF8 -Force
+Set-Content -LiteralPath $gitignorePath -Value ".env`ndata/`n" -Encoding UTF8 -Force
 
 Protect-SecretFile -Path $envPath
 
@@ -358,7 +376,7 @@ Mise a jour des images :
 Arret :
     docker compose down
 "@
-Set-Content -LiteralPath $routerGuidePath -Value $routerGuide -Encoding UTF8
+Set-Content -LiteralPath $routerGuidePath -Value $routerGuide -Encoding UTF8 -Force
 
 Push-Location $InstallDir
 try {

@@ -1,6 +1,8 @@
-# Variante Termux / Android
+# Variante Termux / Android — ClaudeCampusUnlock
 
-Cette variante ne lance pas Docker. Elle utilise :
+> Guide spécifique pour faire tourner la passerelle sur un smartphone Android avec Termux et Cloudflare Tunnel. Pour la documentation générale et la méthode Windows, consulte le [README principal](README.md).
+
+Cette variante ne lance pas Docker. Elle utilise le script [termux-browser-gateway.sh](termux-browser-gateway.sh) et l'architecture suivante :
 
 ```text
 Chromium dans Debian/proot-distro

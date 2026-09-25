@@ -1,13 +1,23 @@
-# Claude Gateway
+# ClaudeCampusUnlock
+
+> Passerelle web privée vers un navigateur distant sécurisé pour accéder à Claude via une connexion de confiance (domicile ou 4G).
 
 Deux méthodes d’accès à un navigateur distant qui sort sur une connexion Internet contrôlée par l’administrateur :
 
 1. **Windows + Docker Desktop + Caddy** : adapté à un PC Windows toujours allumé, avec un nom DNS public et une redirection HTTPS.
 2. **Android + Termux** : solution expérimentale utilisant Chromium dans Debian/proot-distro, noVNC et un tunnel HTTPS temporaire.
 
-Le navigateur s’exécute sur la machine relais. L’utilisateur distant n’a besoin que d’un navigateur web.
+Le navigateur s’exécute sur la machine relais. L’utilisateur distant n’a besoin que d’un navigateur web ordinaire.
 
-> **Important :** ce projet ne doit pas être déployé comme proxy ouvert. Il doit rester protégé par authentification, HTTPS et un accès limité à des personnes de confiance.
+### Fichiers du projet
+
+- [install-claude-gateway.ps1](install-claude-gateway.ps1) : script d'installation et de déploiement automatique sur Windows (Docker + Caddy + Firefox).
+- [README-claude-gateway.md](README-claude-gateway.md) : guide d'utilisation rapide pour la méthode Windows.
+- [termux-browser-gateway.sh](termux-browser-gateway.sh) : script pour Android / Termux (Debian + Chromium + noVNC + Nginx + Cloudflare Tunnel).
+- [README-TERMUX.md](README-TERMUX.md) : guide détaillé dédié à la méthode Android / Termux.
+- [SECURITY.md](SECURITY.md) : consignes et politique de sécurité.
+
+> **Important :** ce projet ne doit pas être déployé comme proxy ouvert. Il doit rester protégé par authentification, HTTPS et un accès strictement limité à des personnes de confiance.
 
 ## Avertissement et sécurité
 
@@ -32,7 +42,7 @@ Le navigateur s’exécute sur la machine relais. L’utilisateur distant n’a 
 
 ### Installation
 
-Copie `install-claude-gateway.ps1` sur le PC Windows, puis ouvre PowerShell.
+Copie `install-claude-gateway.ps1` sur le PC Windows, puis ouvre PowerShell en tant qu'administrateur.
 
 Si Docker Desktop n’est pas encore installé :
 
@@ -123,7 +133,7 @@ WEB_TERMINAL: "0"
 
 ## Méthode 2 — Android et Termux
 
-Cette méthode est expérimentale et vise une seule session Chromium partagée.
+Cette méthode est expérimentale et vise une seule session Chromium partagée. Pour le guide détaillé complet, consulte [README-TERMUX.md](README-TERMUX.md).
 
 ### Limitations
 
@@ -192,7 +202,7 @@ Vérifie que l’adresse retournée correspond à l’adresse IP publique actuel
 ```powershell
 cd "$env:USERPROFILE\claude-gateway"
 docker compose logs --tail 100 caddy
-docker compose logs --tail 100 gabi-firefox
+docker compose logs --tail 100 alice-firefox
 ```
 
 ### Logs Termux
@@ -207,14 +217,14 @@ Le dépôt ne doit contenir aucun secret. Depuis une machine avec GitHub CLI aut
 
 ```bash
 gh auth login
-gh repo create claude-gateway --public --source=. --remote=origin --push
+gh repo create ClaudeCampusUnlock --public --source=. --remote=origin --push
 ```
 
 Sinon, crée un dépôt vide sur GitHub puis :
 
 ```bash
 git branch -M main
-git remote add origin https://github.com/UTILISATEUR/claude-gateway.git
+git remote add origin https://github.com/KLM-corporation/ClaudeCampusUnlock.git
 git push -u origin main
 ```
 

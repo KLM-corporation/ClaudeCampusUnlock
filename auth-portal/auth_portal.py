@@ -43,7 +43,7 @@ def load_users():
     if not os.path.exists(USERS_FILE):
         return {}
     try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
+        with open(USERS_FILE, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception as e:
         print(f"[AUTH ERROR] Impossible de lire {USERS_FILE}: {e}", file=sys.stderr)
@@ -458,6 +458,18 @@ class AuthGatewayHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(b"404 Not Found")
+
+    def do_HEAD(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        if path in ["/login", "/login/", "/verify", "/portal", "/portal/", "/"]:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.add_security_headers()
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)

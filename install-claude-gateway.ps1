@@ -445,7 +445,8 @@ $usersJsonContent = $usersDict | ConvertTo-Json -Depth 5
 Set-Content -LiteralPath $composePath -Value $composeContent -Encoding UTF8 -Force
 Set-Content -LiteralPath $caddyPath -Value $caddyContent -Encoding UTF8 -Force
 Set-Content -LiteralPath $envPath -Value $envContent -Encoding UTF8 -Force
-Set-Content -LiteralPath $usersJsonPath -Value $usersJsonContent -Encoding UTF8 -Force
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($usersJsonPath, $usersJsonContent, $utf8NoBom)
 Set-Content -LiteralPath $gitignorePath -Value ".env`nusers.json`ndata/`n" -Encoding UTF8 -Force
 
 Protect-SecretFile -Path $envPath

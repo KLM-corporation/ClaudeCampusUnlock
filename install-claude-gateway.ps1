@@ -294,7 +294,7 @@ foreach ($friend in $friends) {
       FF_OPEN_URL: "https://claude.ai"
       WEB_FILE_MANAGER: "0"
       WEB_TERMINAL: "0"
-      WEB_HOST_CLIPBOARD_SYNC: "0"
+      WEB_HOST_CLIPBOARD_SYNC: "1"
       TZ: "Europe/Paris"
     volumes:
       - "./data/$($friend.Id):/config"

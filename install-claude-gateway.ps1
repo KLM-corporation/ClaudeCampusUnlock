@@ -76,6 +76,28 @@ function New-RandomPassword {
     return (-join $characters)
 }
 
+function New-Pbkdf2Hash {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Password,
+        [int]$Iterations = 600000
+    )
+
+    $salt = [byte[]]::new(16)
+    (New-Object System.Security.Cryptography.RNGCryptoServiceProvider).GetBytes($salt)
+    $pbkdf2 = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($Password, $salt, $Iterations, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+    $hashBytes = $pbkdf2.GetBytes(32)
+
+    $saltHex = [BitConverter]::ToString($salt).Replace("-", "").ToLowerInvariant()
+    $hashHex = [BitConverter]::ToString($hashBytes).Replace("-", "").ToLowerInvariant()
+
+    return [PSCustomObject]@{
+        salt       = $saltHex
+        hash       = $hashHex
+        iterations = $Iterations
+    }
+}
+
 function Normalize-Id {
     param([string]$Value)
 
@@ -230,12 +252,8 @@ for ($index = 1; $index -le $friendCount; $index++) {
         $password = $rawPass.Trim()
     }
 
-    Write-Info "Generation du hash securise pour $id..."
-    $hashOutput = docker run --rm caddy:2 caddy hash-password --plaintext "$password"
-    $bcryptHash = $hashOutput.Trim()
-    if ([string]::IsNullOrWhiteSpace($bcryptHash) -or -not $bcryptHash.StartsWith("`$2")) {
-        throw "La generation du hash de mot de passe a echoue."
-    }
+    Write-Info "Generation du hash securise (PBKDF2-SHA256) pour $id..."
+    $crypto = New-Pbkdf2Hash -Password $password
 
     $container = "$id-firefox"
     $envName = (($id.ToUpperInvariant() -replace "[^A-Z0-9]", "_") + "_PASSWORD")
@@ -245,7 +263,9 @@ for ($index = 1; $index -le $friendCount; $index++) {
         Id         = $id
         Username   = $id
         Password   = $password
-        BcryptHash = $bcryptHash
+        Salt       = $crypto.salt
+        Hash       = $crypto.hash
+        Iterations = $crypto.iterations
         Container  = $container
         EnvName    = $envName
     }
@@ -255,7 +275,6 @@ New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $InstallDir "data") -Force | Out-Null
 
 $serviceBlocks = New-Object System.Collections.Generic.List[string]
-$basicAuthLines = New-Object System.Collections.Generic.List[string]
 $routingBlocks = New-Object System.Collections.Generic.List[string]
 $envLines = New-Object System.Collections.Generic.List[string]
 
@@ -284,7 +303,6 @@ foreach ($friend in $friends) {
     shm_size: "1gb"
 "@)
 
-    $basicAuthLines.Add("        $($friend.Username) $($friend.BcryptHash)")
     $envLines.Add("# Ami : $($friend.Id) | Identifiant : $($friend.Username) | Mot de passe : $($friend.Password)")
     $envLines.Add("$($friend.EnvName)=$($friend.Password)")
 }
@@ -292,29 +310,39 @@ foreach ($friend in $friends) {
 if ($friends.Count -eq 1) {
     $singleFriend = $friends[0]
     $routingBlocks.Add(@"
-    reverse_proxy https://$($singleFriend.Container):5800 {
-        transport http {
-            tls_insecure_skip_verify
-        }
-    }
+            reverse_proxy https://$($singleFriend.Container):5800 {
+                transport http {
+                    tls_insecure_skip_verify
+                }
+            }
 "@)
 } else {
     foreach ($friend in $friends) {
         $routingBlocks.Add(@"
-    @is_$($friend.Id) expression {http.auth.user.id} == '$($friend.Username)'
-    handle @is_$($friend.Id) {
-        reverse_proxy https://$($friend.Container):5800 {
-            transport http {
-                tls_insecure_skip_verify
+            @is_$($friend.Id) header X-Auth-User $($friend.Username)
+            handle @is_$($friend.Id) {
+                reverse_proxy https://$($friend.Container):5800 {
+                    transport http {
+                        tls_insecure_skip_verify
+                    }
+                }
             }
-        }
-    }
 "@)
     }
 }
 
 $composeContent = @"
 services:
+  auth-portal:
+    image: python:3-alpine
+    container_name: claude-gateway-auth
+    restart: unless-stopped
+    volumes:
+      - "./auth_portal.py:/app/auth_portal.py:ro"
+      - "./users.json:/app/users.json:ro"
+    command: ["python", "-u", "/app/auth_portal.py"]
+    expose:
+      - "8080"
 $($serviceBlocks -join "`n")
   caddy:
     image: caddy:2
@@ -328,6 +356,7 @@ $($serviceBlocks -join "`n")
       - "caddy_data:/data"
       - "caddy_config:/config"
     depends_on:
+      - auth-portal
 $((($friends | ForEach-Object { "      - $($_.Container)" }) -join "`n"))
 
 volumes:
@@ -338,14 +367,41 @@ volumes:
 $caddyContent = @"
 # Caddy obtient automatiquement le certificat HTTPS pour $publicHost.
 # Tous les amis utilisent la meme URL unique : https://$publicHost
-# Caddy authentifie chaque ami et l'aiguille vers son propre conteneur Firefox.
+# Caddy verifie les sessions securisees via le portail d'authentification.
 
 $publicHost {
-    basic_auth {
-$($basicAuthLines -join "`n")
+    # 1. Routes publiques sans authentification
+    @no_auth {
+        path /login /login/* /logout
+    }
+    handle @no_auth {
+        reverse_proxy http://auth-portal:8080
     }
 
+    # 2. Toutes les autres routes requierent une session active
+    handle {
+        forward_auth http://auth-portal:8080 {
+            uri /verify
+            copy_headers X-Auth-User
+        }
+
+        # Page portail (interface d'accueil avec top bar et bouton deconnexion)
+        @is_portal path / /portal /portal/*
+        handle @is_portal {
+            reverse_proxy http://auth-portal:8080
+        }
+
+        # Flux Firefox distant (noVNC) — aiguillage vers le conteneur de l'ami
+        handle_path /stream/* {
 $($routingBlocks -join "`n")
+        }
+
+        # Assets et websockets de noVNC au cas ou demandes a la racine
+        @novnc_root path /websockify* /app/* /core/* /vendor/*
+        handle @novnc_root {
+$($routingBlocks -join "`n")
+        }
+    }
 }
 "@
 
@@ -358,15 +414,38 @@ $($envLines -join "`n")
 $composePath = Join-Path $InstallDir "compose.yml"
 $caddyPath = Join-Path $InstallDir "Caddyfile"
 $envPath = Join-Path $InstallDir ".env"
+$usersJsonPath = Join-Path $InstallDir "users.json"
+$authPortalPath = Join-Path $InstallDir "auth_portal.py"
 $gitignorePath = Join-Path $InstallDir ".gitignore"
 $routerGuidePath = Join-Path $InstallDir "CONFIGURATION-ROUTEUR.txt"
+
+# Copie du script auth_portal.py dans le dossier d'installation
+$sourceAuthScript = Join-Path $PSScriptRoot "auth-portal" "auth_portal.py"
+if (Test-Path $sourceAuthScript) {
+    Copy-Item -LiteralPath $sourceAuthScript -Destination $authPortalPath -Force
+} else {
+    throw "Le script auth_portal.py est introuvable dans $sourceAuthScript."
+}
+
+# Preparation du fichier securise users.json avec les hashs PBKDF2 salés
+$usersDict = [ordered]@{}
+foreach ($friend in $friends) {
+    $usersDict[$friend.Username] = [ordered]@{
+        salt       = $friend.Salt
+        hash       = $friend.Hash
+        iterations = $friend.Iterations
+    }
+}
+$usersJsonContent = $usersDict | ConvertTo-Json -Depth 5
 
 Set-Content -LiteralPath $composePath -Value $composeContent -Encoding UTF8 -Force
 Set-Content -LiteralPath $caddyPath -Value $caddyContent -Encoding UTF8 -Force
 Set-Content -LiteralPath $envPath -Value $envContent -Encoding UTF8 -Force
-Set-Content -LiteralPath $gitignorePath -Value ".env`ndata/`n" -Encoding UTF8 -Force
+Set-Content -LiteralPath $usersJsonPath -Value $usersJsonContent -Encoding UTF8 -Force
+Set-Content -LiteralPath $gitignorePath -Value ".env`nusers.json`ndata/`n" -Encoding UTF8 -Force
 
 Protect-SecretFile -Path $envPath
+Protect-SecretFile -Path $usersJsonPath
 
 $routerGuide = @"
 CONFIGURATION A FAIRE SUR LE ROUTEUR

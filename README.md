@@ -251,8 +251,8 @@ Voici ce que doit faire la personne distante connectée au réseau filtré du ca
 
 1. **Ouvrir son navigateur habituel** (Chrome, Safari, Firefox, Edge) sur son ordinateur portable ou sa tablette.
 2. **Accéder à l'URL unique** fournie par l'hôte (ex: `https://relais-claude.duckdns.org`).
-3. **S'authentifier** : Une boîte de dialogue standard du navigateur s'ouvre. L'ami saisit son identifiant (ex: `gabi`) et son mot de passe (ex: `123`).
-4. **Aiguillage automatique** : Caddy le connecte instantanément à son navigateur Firefox personnel avec Claude.ai déjà prêt !
+3. **S'authentifier** : Une page de connexion sécurisée et moderne s'affiche. L'ami saisit son identifiant (ex: `gabi`) et son mot de passe (ex: `123`).
+4. **Accès & Déconnexion sécurisée** : Caddy et le portail connectent instantanément l'ami à son conteneur Firefox dédié. Une barre en haut affiche l'utilisateur connecté (`👤 gabi`) et propose un bouton **🚪 Déconnexion** qui révoque la session immédiatement côté serveur. Fermer le navigateur supprime également la session éphémère !
 5. **Connexion Claude** : L'ami se connecte à **son propre compte Claude personnel**.
 
 > [!TIP]

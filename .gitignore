@@ -1,9 +1,12 @@
 # Secrets and runtime state
 .env
 *.env
+users.json
 data/
 *.log
 *.pid
+__pycache__/
+*.pyc
 
 # Generated deployment files
 compose.yml
@@ -15,3 +18,4 @@ CONFIGURATION-ROUTEUR.txt
 Thumbs.db
 .vscode/
 .idea/
+

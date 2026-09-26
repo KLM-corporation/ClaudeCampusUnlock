@@ -79,6 +79,7 @@ Cette méthode est recommandée si vous avez un PC Windows connecté à votre bo
 
 - Windows 10 ou 11 (64 bits).
 - Connexion à la box Internet de la maison avec accès à l'interface d'administration.
+- *(Note : Vous n'avez **PAS** besoin d'installer Python, Node ou d'autres outils sur votre PC : le portail d'authentification fonctionne automatiquement dans son propre conteneur Docker léger).*
 
 ---
 
@@ -312,6 +313,13 @@ Certaines connexions (comme les box 4G/5G ou certains abonnements fibre) partage
 Android tue les applications en arrière-plan pour économiser la batterie. Pour éviter cela :
 - Allez dans les paramètres de votre téléphone > *Applications* > *Termux* > *Batterie* > Sélectionnez **Non restreinte**.
 - Le script active automatiquement `termux-wake-lock` pour empêcher la mise en veille du CPU pendant l'exécution.
+</details>
+
+<details>
+<summary><b>5. Dois-je installer Python sur mon PC Windows ?</b></summary>
+
+**Non, absolument pas !**  
+Le portail d'authentification et de gestion des sessions s'exécute à 100% à l'intérieur d'un conteneur Docker officiel ultra-léger (`python:3-alpine`, environ 15 Mo). Docker télécharge et gère cette image automatiquement lors de l'installation. Votre machine Windows n'a besoin que de **Docker Desktop**.
 </details>
 
 ---

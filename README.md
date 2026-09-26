@@ -33,8 +33,11 @@ flowchart LR
         subgraph OptionA["Option 1 : PC Maison (Windows)"]
             Router["Box Internet<br/>(Ports 80/443)"]
             Caddy["Caddy Proxy<br/>(Certificat SSL auto)"]
+            Auth["🛡️ Portail d'Auth & Déconnexion<br/>(Sessions éphémères + PBKDF2)"]
             Firefox["Conteneurs Firefox isolés<br/>(1 profil distinct par ami)"]
-            Router --> Caddy --> Firefox
+            Router --> Caddy
+            Caddy <-->|forward_auth| Auth
+            Caddy -->|Routage sécurisé| Firefox
         end
 
         subgraph OptionB["Option 2 : Smartphone 4G (Termux)"]
@@ -157,11 +160,15 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
    - Son identifiant court (ex: `gabi`, `maxim`).
    - Son mot de passe : vous pouvez taper un mot de passe personnalisé (ex: `123`) ou appuyer sur **Entrée** pour en générer un aléatoirement.
 
-#### 💡 Comment fonctionne l'aiguillage intelligent (Smart Auth Routing) :
-- Tous vos amis utilisent la **même et unique adresse web** : `https://relais-claude.duckdns.org`.
-- Caddy protège l'entrée et filtre les accès.
-- Quand **Gabi** s'authentifie, Caddy le connecte directement à sa session Firefox personnelle.
-- Quand **Maxim** s'authentifie, Caddy le connecte à sa propre session.
+#### 💡 Comment fonctionne l'aiguillage intelligent & sécurisé (Smart Auth Portal) :
+- **URL unique pour tout le monde** : Tous vos amis ouvrent la même adresse web : `https://relais-claude.duckdns.org`.
+- **Portail d'authentification sécurisé** : Une page web moderne s'affiche, protégée contre la force brute (blocage IP automatique après 5 échecs).
+- **Mots de passe protégés** : Aucun mot de passe en clair n'est stocké ; ils sont hashés avec **PBKDF2-SHA256 salé (600 000 itérations)**.
+- **Aiguillage étanche** : Quand **Gabi** se connecte, Caddy l'aiguille directement vers son conteneur Firefox dédié. Quand **Maxim** se connecte, il accède à sa propre session.
+- **Bouton Déconnexion & Sessions éphémères** :
+  - Une barre supérieure discrète affiche le statut et le nom de l'utilisateur connecté (`👤 gabi`).
+  - Un clic sur le bouton rouge **`🚪 Déconnexion`** détruit immédiatement la session côté serveur et renvoie à la page de connexion.
+  - Fermer le navigateur ou l'onglet efface également la session (cookie RAM non persistant).
 - Chaque ami dispose d'un conteneur dédié, avec ses propres cookies et sessions Claude totalement isolés.
 
 ---
@@ -265,7 +272,10 @@ Voici ce que doit faire la personne distante connectée au réseau filtré du ca
 ## 🔒 Sécurité et Bonnes Pratiques
 
 - **Comptes personnels** : Chaque utilisateur doit impérativement se connecter avec son propre compte Claude. Ne partagez jamais de cookies, tokens ou mots de passe de votre propre compte.
-- **Confidentialité du fichier `.env`** : Le fichier `.env` sur le PC Windows contient les mots de passe d'accès. Il est protégé localement avec des ACLs Windows strictes et est ignoré par Git via le [`.gitignore`](.gitignore). Ne le commitez jamais !
+- **Mots de passe hashés avec sel (PBKDF2)** : Aucun mot de passe n'est stocké en clair. Le fichier `users.json` contient uniquement des hashs salés selon les recommandations de l'OWASP (600 000 itérations).
+- **Protection Anti-Brute-Force** : Le portail bloque automatiquement toute adresse IP tentant plus de 5 faux mots de passe consécutifs pendant 15 minutes.
+- **Sessions éphémères & Déconnexion** : Les sessions expirent automatiquement après 2h d'inactivité. Un clic sur **🚪 Déconnexion** détruit instantanément la session en mémoire serveur, interdisant toute réutilisation du cookie même en cas de vol.
+- **Confidentialité des fichiers sensibles (`.env`, `users.json`)** : Protégés localement avec des ACLs Windows strictes et ignorés par Git via le [`.gitignore`](.gitignore). Ne les commitez jamais !
 - **Cercle de confiance** : Tout le trafic sortant de la passerelle utilise l'adresse IP publique de votre domicile ou de votre forfait 4G. Ne donnez l'accès qu'à des personnes de confiance.
 - Consultez notre politique de sécurité détaillée dans [SECURITY.md](SECURITY.md).
 

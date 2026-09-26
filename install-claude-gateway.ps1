@@ -420,11 +420,15 @@ $gitignorePath = Join-Path $InstallDir ".gitignore"
 $routerGuidePath = Join-Path $InstallDir "CONFIGURATION-ROUTEUR.txt"
 
 # Copie du script auth_portal.py dans le dossier d'installation
-$sourceAuthScript = Join-Path $PSScriptRoot "auth-portal" "auth_portal.py"
+$scriptBase = if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) { $PSScriptRoot } else { $PWD.Path }
+$sourceAuthScript = [System.IO.Path]::Combine($scriptBase, "auth-portal", "auth_portal.py")
+if (-not (Test-Path $sourceAuthScript)) {
+    $sourceAuthScript = [System.IO.Path]::Combine($PWD.Path, "auth-portal", "auth_portal.py")
+}
 if (Test-Path $sourceAuthScript) {
     Copy-Item -LiteralPath $sourceAuthScript -Destination $authPortalPath -Force
 } else {
-    throw "Le script auth_portal.py est introuvable dans $sourceAuthScript."
+    throw "Le script auth_portal.py est introuvable dans '$sourceAuthScript'. Assure-toi d'executer le script depuis le dossier du depot ClaudeCampusUnlock."
 }
 
 # Preparation du fichier securise users.json avec les hashs PBKDF2 salés

@@ -292,10 +292,14 @@ foreach ($friend in $friends) {
       SECURE_CONNECTION: "1"
       WEB_AUTHENTICATION: "0"
       FF_OPEN_URL: "https://claude.ai"
-      WEB_FILE_MANAGER: "0"
+      WEB_FILE_MANAGER: "1"
+      WEB_FILE_MANAGER_ALLOWED_PATHS: "/config/downloads"
       WEB_TERMINAL: "0"
       WEB_HOST_CLIPBOARD_SYNC: "1"
       TZ: "Europe/Paris"
+      FF_PREF_1: "browser.download.dir=/config/downloads"
+      FF_PREF_2: "browser.download.folderList=2"
+      FF_PREF_3: "browser.download.useDownloadDir=true"
     volumes:
       - "./data/$($friend.Id):/config"
     expose:
@@ -396,8 +400,8 @@ $publicHost {
 $($routingBlocks -join "`n")
         }
 
-        # Assets et websockets de noVNC au cas ou demandes a la racine
-        @novnc_root path /websockify* /app/* /core/* /vendor/*
+        # Assets, websockets et gestionnaire de fichiers noVNC au cas ou demandes a la racine
+        @novnc_root path /websockify* /ws-filemanager* /download/* /app/* /core/* /vendor/*
         handle @novnc_root {
 $($routingBlocks -join "`n")
         }

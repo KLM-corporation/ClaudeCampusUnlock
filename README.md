@@ -264,9 +264,10 @@ Voici ce que doit faire la personne distante connectée au réseau filtré du ca
 5. **Connexion Claude** : L'ami se connecte à **son propre compte Claude personnel**.
 
 > [!TIP]
-> **Presse-papier (Copier/Coller)** :  
-> - Sous la méthode Windows (Docker), le presse-papier est synchronisable directement dans les paramètres du navigateur distant.
-> - Sous la méthode Termux (noVNC), ouvrez le volet latéral gauche de noVNC pour coller du texte entre votre machine locale et le bureau distant.
+> **Presse-papier & Transfert de fichiers** :  
+> - **Copier / Coller** : Fonctionne de manière fluide et transparente entre votre machine locale et le navigateur distant.
+> - **Télécharger des fichiers sur votre PC** : Cliquez sur le bouton **📁 Fichiers / Téléchargements** dans la barre du haut (ou sur l'icône 📁 dans le menu latéral). Cliquez sur votre fichier puis sur **Télécharger** : il s'enregistre immédiatement dans le dossier Téléchargements de votre PC physique !
+> - **Envoyer des fichiers à Claude** : Le gestionnaire de fichiers permet également d'envoyer (Upload) n'importe quel document ou image depuis votre PC physique vers le Firefox distant.
 
 ---
 

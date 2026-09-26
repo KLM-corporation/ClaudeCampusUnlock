@@ -283,6 +283,21 @@ PORTAL_HTML_TEMPLATE = """<!DOCTYPE html>
             transition: all 0.2s;
         }
         .btn-fullscreen:hover { background: #475569; color: #fff; }
+        .btn-files {
+            background: rgba(99, 102, 241, 0.2);
+            color: #c7d2fe;
+            border: 1px solid rgba(99, 102, 241, 0.4);
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn-files:hover { background: rgba(99, 102, 241, 0.4); color: #fff; }
         .btn-logout {
             background: #dc2626;
             color: #fff;
@@ -321,6 +336,7 @@ PORTAL_HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
         </div>
         <div class="actions">
+            <button id="fmBtn" class="btn-files" onclick="openFileManager()" title="Accéder aux téléchargements et envoyer des fichiers">📁 Fichiers / Téléchargements</button>
             <button id="fsBtn" class="btn-fullscreen" onclick="toggleFullscreen()" title="Basculer en plein écran">⛶ Plein écran</button>
             <a href="/logout" class="btn-logout" title="Fermer la session immédiatement">🚪 Déconnexion</a>
         </div>
@@ -330,6 +346,19 @@ PORTAL_HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <script>
+        function openFileManager() {
+            try {
+                var iframe = document.getElementById('desktopFrame');
+                if (iframe && iframe.contentWindow && iframe.contentDocument) {
+                    var btn = iframe.contentDocument.getElementById('noVNC_file_manager_button');
+                    if (btn) {
+                        btn.click();
+                        return;
+                    }
+                }
+            } catch(e) {}
+            alert("Pour récupérer vos téléchargements ou envoyer un fichier : cliquez sur l'icône 📁 Dossier dans le menu latéral gauche de l'écran.");
+        }
         function toggleFullscreen() {
             var elem = document.documentElement;
             if (!document.fullscreenElement) {

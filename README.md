@@ -170,6 +170,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
   - Une barre supérieure discrète affiche le statut et le nom de l'utilisateur connecté (`👤 gabi`).
   - Un clic sur le bouton rouge **`🚪 Déconnexion`** détruit immédiatement la session côté serveur et renvoie à la page de connexion.
   - Fermer le navigateur ou l'onglet efface également la session (cookie RAM non persistant).
+- **Transfert de fichiers & Téléchargements** : Le bouton **`📁 Fichiers / Téléchargements`** dans la barre supérieure permet de rapatrier en 1 clic les documents générés par Claude sur le PC physique de l'ami, ou d'envoyer des fichiers locaux vers le navigateur distant.
 - Chaque ami dispose d'un conteneur dédié, avec ses propres cookies et sessions Claude totalement isolés.
 
 ---

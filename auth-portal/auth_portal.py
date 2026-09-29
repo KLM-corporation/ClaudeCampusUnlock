@@ -529,7 +529,13 @@ class AuthGatewayHandler(http.server.BaseHTTPRequestHandler):
         password = form_data.get("password", [""])[0]
 
         users = load_users()
-        user_record = users.get(username)
+        user_record = None
+        canonical_user = None
+        for u_key, u_val in users.items():
+            if u_key.lower() == username.lower():
+                user_record = u_val
+                canonical_user = u_key.lower()
+                break
 
         if user_record and verify_password(user_record, password):
             # Succès ! Réinitialiser les échecs
@@ -539,7 +545,7 @@ class AuthGatewayHandler(http.server.BaseHTTPRequestHandler):
             now = time.time()
             with sessions_lock:
                 sessions[session_id] = {
-                    "user": username,
+                    "user": canonical_user,
                     "created_at": now,
                     "last_seen": now
                 }

@@ -203,7 +203,10 @@ $gabiBefore = $users.gabi
 # 5b. relance sur une installation heritee de l'ancien script : users.json cache + .env en clair -> ajout d'un ami
 [System.IO.File]::SetAttributes((Join-Path $installDirA 'users.json'), [System.IO.FileAttributes]::Hidden)
 [System.IO.File]::WriteAllText((Join-Path $installDirA '.env'), "GABI_PASSWORD=ancien`n")
+New-Item -ItemType Directory -Path (Join-Path $installDirA 'data\gabi') -Force | Out-Null   # gabi a deja un profil, maxim non
 $log = Invoke-Installer -Dir $installDirA -Answers @('O', '', '1', 'jojo', $typedPassword, $typedPassword)
+Assert-True (($log -match "Aucun profil Firefox existant pour 'maxim'") -and ($log -notmatch "Aucun profil Firefox existant pour 'gabi'")) "5b relance : avertit quand un ami conserve n'a pas de profil (alias possible), pas pour celui qui en a un"
+Assert-True ($log -match 'sessions ouvertes sur le portail seront perdues') "5b relance : previent que les sessions du portail seront perdues"
 $users = Read-Users $installDirA
 Assert-True ((@($users.PSObject.Properties.Name) -join ',') -eq 'gabi,maxim,jojo') "5b relance : les amis existants sont conserves, jojo ajoute (plus d'erreur 'acces refuse')"
 Assert-True (($users.gabi.salt -eq $gabiBefore.salt) -and ($users.gabi.hash -eq $gabiBefore.hash)) "5b relance : le mot de passe de gabi est inchange"

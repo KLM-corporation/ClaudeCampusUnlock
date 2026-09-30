@@ -640,7 +640,11 @@ if ($existingFriends.Count -gt 0) {
         foreach ($existing in $existingFriends) {
             $friends += $existing
             $usedIds[$existing.Id] = $true
+            if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $InstallDir "data") $existing.Id))) {
+                Write-WarningMessage "Aucun profil Firefox existant pour '$($existing.Id)' (data\$($existing.Id) absent) : un navigateur vierge sera cree. Si cet identifiant est un alias de l'ami d'un autre profil (routage ajoute a la main dans le Caddyfile), reponds 'n' et corrige users.json d'abord."
+            }
         }
+        Write-WarningMessage "Les conteneurs vont etre recrees : les sessions ouvertes sur le portail seront perdues (les amis devront se reconnecter ; leurs profils Firefox sont conserves)."
     }
     else {
         Write-WarningMessage "Les amis existants seront remplaces (les anciens fichiers sont sauvegardes)."

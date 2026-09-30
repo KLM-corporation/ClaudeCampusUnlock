@@ -123,6 +123,7 @@ proot-distro login debian -- bash -lc 'cat /root/claude-browser-logs/*.log'
 
 ## 🔒 Sécurité
 
+- noVNC (port 6080) et Nginx (port 8081) n'écoutent que sur `127.0.0.1` : seul le tunnel Cloudflare peut les joindre, pas les autres appareils du même Wi-Fi ou partage de connexion.
 - Ne réutilisez jamais le mot de passe de votre propre compte Claude pour la passerelle.
 - Chaque ami doit se connecter avec son propre compte personnel.
 - Consultez [SECURITY.md](SECURITY.md) pour les recommandations complètes.

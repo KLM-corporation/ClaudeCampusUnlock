@@ -64,7 +64,7 @@ flowchart LR
 | Critère | 💻 Méthode 1 : Windows + Docker | 📱 Méthode 2 : Android + Termux |
 | :--- | :--- | :--- |
 | **Matériel requis** | PC Windows 10/11 fixe allumé | Smartphone Android avec données 4G/5G |
-| **Nombre d'utilisateurs** | **1 à 20 amis** en simultané (profils étanches) | **1 session partagée** (à la demande) |
+| **Nombre d'utilisateurs** | **1 à 20 amis** (un navigateur et un réseau Docker par ami, 3 Go de RAM max chacun par défaut : compte la RAM de votre PC, pas 20 navigateurs simultanés) | **1 session partagée** (à la demande) |
 | **Stabilité de l'adresse** | Fixe et permanente (`alice.mon-domaine.org`) | Temporaire (URL Cloudflare change au redémarrage) |
 | **Configuration routeur** | Oui (ouverture des ports 80/443 sur la box) | **Aucune** (contourne le CGNAT grâce au tunnel) |
 | **Guide d'installation** | [Voir le guide Windows](#-méthode-1--windows-docker-et-caddy) | [Voir le guide Android](#-méthode-2--android-et-termux) |
@@ -93,9 +93,11 @@ git clone https://github.com/KLM-corporation/ClaudeCampusUnlock.git
 cd ClaudeCampusUnlock
 ```
 
-*(Si vous n'avez pas Git, téléchargez directement le script d'installation en une ligne :)*
+*(Si vous n'avez pas Git, téléchargez le dépôt **complet** : le script d'installation seul ne suffit pas, il a besoin du dossier `auth-portal\` :)*
 ```powershell
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/KLM-corporation/ClaudeCampusUnlock/main/install-claude-gateway.ps1" -OutFile "install-claude-gateway.ps1"
+Invoke-WebRequest -Uri "https://github.com/KLM-corporation/ClaudeCampusUnlock/archive/refs/heads/main.zip" -OutFile "ClaudeCampusUnlock.zip"
+Expand-Archive -Path "ClaudeCampusUnlock.zip" -DestinationPath "."
+cd ClaudeCampusUnlock-main
 ```
 
 ---
@@ -154,24 +156,30 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 .\install-claude-gateway.ps1 -InstallDocker
 ```
 
+Options utiles : `-InstallDocker` (installe Docker Desktop), `-FirefoxMemoryLimit 2g` (limite de RAM par navigateur, `3g` par défaut), `-GenerateOnly` (génère les fichiers sans lancer Docker).
+
 #### Ce que le script va vous demander :
-1. **Nom DNS public général** : Votre domaine DuckDNS unique (ex: `relais-claude.duckdns.org`).
-2. **Nombre d'amis** : De 1 à 20 (chacun aura son propre navigateur isolé).
+1. **Nom DNS public général** : Votre domaine DuckDNS unique (ex: `relais-claude.duckdns.org`). Une adresse IP est refusée (Let's Encrypt a besoin d'un nom).
+2. **Nombre d'amis** : De 1 à 20 (chacun aura son propre navigateur, sur son propre réseau Docker).
 3. **Pour chaque ami** :
    - Son identifiant court (ex: `gabi`, `maxim`).
-   - Son mot de passe : vous pouvez taper un mot de passe personnalisé (ex: `123`) ou appuyer sur **Entrée** pour en générer un aléatoirement.
+   - Son mot de passe : saisie masquée, **12 caractères minimum** et confirmation, ou **Entrée** pour en générer un aléatoire de 24 caractères. Les mots de passe ne sont affichés qu'**une seule fois, à la fin de l'installation** : transmettez-les à ce moment-là.
 
-#### 💡 Comment fonctionne l'aiguillage intelligent & sécurisé (Smart Auth Portal) :
+#### ➕ Ajouter un ami plus tard
+Relancez simplement `.\install-claude-gateway.ps1` : le script détecte l'installation existante, propose de **conserver les amis actuels (leurs mots de passe ne changent pas)** et n'en demande que les nouveaux. Les anciens fichiers sont sauvegardés dans `%USERPROFILE%\claude-gateway\backup-AAAAMMJJ-HHMMSS`. Répondre `n` repart de zéro. Le script ne modifie que les fichiers qu'il génère : si vous avez retouché `compose.yml` ou le `Caddyfile` à la main, vos modifications seront écrasées (elles restent dans la sauvegarde).
+
+#### 💡 Comment fonctionne l'aiguillage (Smart Auth Portal) :
 - **URL unique pour tout le monde** : Tous vos amis ouvrent la même adresse web : `https://relais-claude.duckdns.org`.
-- **Portail d'authentification sécurisé** : Une page web moderne s'affiche, protégée contre la force brute (blocage IP automatique après 5 échecs).
-- **Mots de passe protégés** : Aucun mot de passe en clair n'est stocké ; ils sont hashés avec **PBKDF2-SHA256 salé (600 000 itérations)**.
-- **Aiguillage étanche** : Quand **Gabi** se connecte, Caddy l'aiguille directement vers son conteneur Firefox dédié. Quand **Maxim** se connecte, il accède à sa propre session.
-- **Bouton Déconnexion & Sessions éphémères** :
+- **Portail d'authentification** : Une page web affiche le formulaire de connexion. Anti-force-brute : 5 échecs par couple (adresse IP, identifiant) et 30 par adresse IP, sur 15 minutes. Sous Docker Desktop, toutes les connexions arrivent avec l'adresse de la passerelle Docker : le blocage joue alors surtout par identifiant.
+- **Mots de passe protégés** : Aucun mot de passe en clair n'est stocké ; ils sont hashés avec **PBKDF2-SHA256 salé (600 000 itérations)** dans `users.json`.
+- **Aiguillage** : Quand **Gabi** se connecte, Caddy l'aiguille vers son conteneur Firefox dédié. Quand **Maxim** se connecte, il accède à sa propre session.
+- **Bouton Déconnexion & Sessions** :
   - Une barre supérieure discrète affiche le statut et le nom de l'utilisateur connecté (`👤 gabi`).
   - Un clic sur le bouton rouge **`🚪 Déconnexion`** détruit immédiatement la session côté serveur et renvoie à la page de connexion.
-  - Fermer le navigateur ou l'onglet efface également la session (cookie RAM non persistant).
-- **Transfert de fichiers & Téléchargements** : Le bouton **`📁 Fichiers / Téléchargements`** dans la barre supérieure permet de rapatrier en 1 clic les documents générés par Claude sur le PC physique de l'ami, ou d'envoyer des fichiers locaux vers le navigateur distant.
-- Chaque ami dispose d'un conteneur dédié, avec ses propres cookies et sessions Claude totalement isolés.
+  - Le cookie de session disparaît à la fermeture du **navigateur** (pas d'un onglet). Côté serveur, une session reste valable jusqu'à 2 h sans requête HTTP ou 8 h au total : pensez à vous déconnecter sur un ordinateur partagé.
+- **Transfert de fichiers & Téléchargements** : Le bouton **`📁 Fichiers / Téléchargements`** dans la barre supérieure permet de rapatrier en 1 clic les documents générés par Claude sur le PC physique de l'ami, ou d'envoyer des fichiers locaux vers le navigateur distant (limité au dossier `/config/downloads` du conteneur).
+- **Isolation entre amis** : chaque ami a son conteneur, ses cookies et ses sessions Claude, et **son propre réseau Docker** : un navigateur ne peut joindre ni celui d'un autre ami ni le portail d'authentification.
+- **Limite à connaître** : un navigateur distant peut toujours joindre les services de **votre PC** (via `host.docker.internal`) et de **votre réseau local** (box, NAS, imprimante...), comme n'importe quel navigateur placé chez vous. Ne donnez l'accès qu'à des personnes de confiance. Voir [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -188,6 +196,9 @@ docker compose ps
 
 # Voir les logs de Caddy et la génération des certificats HTTPS
 docker compose logs -f caddy
+
+# Journal des connexions (réussies ou non, avec l'adresse vue par le portail)
+docker compose logs -f auth-portal
 
 # Mettre à jour les conteneurs (Firefox et Caddy)
 docker compose pull
@@ -222,7 +233,7 @@ chmod +x termux-browser-gateway.sh
 ./termux-browser-gateway.sh install
 ```
 
-Le script installe automatiquement Debian, Chromium, noVNC, Nginx et Cloudflared, puis vous invite à choisir un identifiant et un mot de passe pour protéger votre passerelle.
+Le script installe automatiquement Debian, Chromium, noVNC, Nginx et Cloudflared, puis vous invite à choisir un identifiant et un mot de passe (16 caractères minimum) pour protéger votre passerelle. noVNC et Nginx n'écoutent que sur `127.0.0.1` du téléphone : seul le tunnel Cloudflare y accède, les autres appareils du même Wi-Fi n'y ont pas accès.
 
 ---
 
@@ -260,8 +271,8 @@ Voici ce que doit faire la personne distante connectée au réseau filtré du ca
 
 1. **Ouvrir son navigateur habituel** (Chrome, Safari, Firefox, Edge) sur son ordinateur portable ou sa tablette.
 2. **Accéder à l'URL unique** fournie par l'hôte (ex: `https://relais-claude.duckdns.org`).
-3. **S'authentifier** : Une page de connexion sécurisée et moderne s'affiche. L'ami saisit son identifiant (ex: `gabi`) et son mot de passe (ex: `123`).
-4. **Accès & Déconnexion sécurisée** : Caddy et le portail connectent instantanément l'ami à son conteneur Firefox dédié. Une barre en haut affiche l'utilisateur connecté (`👤 gabi`) et propose un bouton **🚪 Déconnexion** qui révoque la session immédiatement côté serveur. Fermer le navigateur supprime également la session éphémère !
+3. **S'authentifier** : Une page de connexion s'affiche. L'ami saisit son identifiant (ex: `gabi`, sans tenir compte des majuscules) et le mot de passe que l'hôte lui a transmis.
+4. **Accès & Déconnexion** : Caddy et le portail connectent l'ami à son conteneur Firefox dédié. Une barre en haut affiche l'utilisateur connecté (`👤 gabi`) et propose un bouton **🚪 Déconnexion** qui révoque la session côté serveur. Sur un ordinateur qui n'est pas le sien, l'ami doit cliquer sur **Déconnexion** (fermer un onglet ne suffit pas).
 5. **Connexion Claude** : L'ami se connecte à **son propre compte Claude personnel**.
 
 > [!TIP]
@@ -275,11 +286,12 @@ Voici ce que doit faire la personne distante connectée au réseau filtré du ca
 ## 🔒 Sécurité et Bonnes Pratiques
 
 - **Comptes personnels** : Chaque utilisateur doit impérativement se connecter avec son propre compte Claude. Ne partagez jamais de cookies, tokens ou mots de passe de votre propre compte.
-- **Mots de passe hashés avec sel (PBKDF2)** : Aucun mot de passe n'est stocké en clair. Le fichier `users.json` contient uniquement des hashs salés selon les recommandations de l'OWASP (600 000 itérations).
-- **Protection Anti-Brute-Force** : Le portail bloque automatiquement toute adresse IP tentant plus de 5 faux mots de passe consécutifs pendant 15 minutes.
-- **Sessions éphémères & Déconnexion** : Les sessions expirent automatiquement après 2h d'inactivité. Un clic sur **🚪 Déconnexion** détruit instantanément la session en mémoire serveur, interdisant toute réutilisation du cookie même en cas de vol.
-- **Confidentialité des fichiers sensibles (`.env`, `users.json`)** : Protégés localement avec des ACLs Windows strictes et ignorés par Git via le [`.gitignore`](.gitignore). Ne les commitez jamais !
-- **Cercle de confiance** : Tout le trafic sortant de la passerelle utilise l'adresse IP publique de votre domicile ou de votre forfait 4G. Ne donnez l'accès qu'à des personnes de confiance.
+- **Mots de passe hashés avec sel (PBKDF2)** : Aucun mot de passe n'est stocké en clair. Le fichier `users.json` contient uniquement des hashs salés (600 000 itérations, recommandation OWASP). Choisissez des mots de passe longs (12 caractères minimum imposés, ou laissez le script en générer).
+- **Protection Anti-Brute-Force** : 5 échecs par couple (adresse IP, identifiant) puis 30 par adresse IP, bloqués 15 minutes. Les tentatives sont visibles dans `docker compose logs auth-portal`.
+- **Sessions & Déconnexion** : Un clic sur **🚪 Déconnexion** supprime la session en mémoire serveur (le cookie volé ne sert plus). Sans déconnexion, une session expire après 2 h sans requête HTTP (8 h maximum).
+- **Fichiers sensibles (`users.json`)** : Droits Windows limités à votre compte et ignoré par Git via le [`.gitignore`](.gitignore). Ne le commitez jamais ! Les sauvegardes `backup-*` contiennent aussi un `users.json`.
+- **Cercle de confiance** : Tout le trafic sortant de la passerelle utilise l'adresse IP publique de votre domicile ou de votre forfait 4G, et les navigateurs distants peuvent atteindre votre PC et votre réseau local. Ne donnez l'accès qu'à des personnes de confiance.
+- **Règles du réseau et des services** : Vérifiez la législation locale, le règlement du réseau que vos amis utilisent (campus, entreprise, lycée) et les conditions d'utilisation des services concernés avant de contourner un filtrage : c'est à vous d'en assumer les conséquences.
 - Consultez notre politique de sécurité détaillée dans [SECURITY.md](SECURITY.md).
 
 ---
@@ -323,6 +335,31 @@ Android tue les applications en arrière-plan pour économiser la batterie. Pour
 **Non, absolument pas !**  
 Le portail d'authentification et de gestion des sessions s'exécute à 100% à l'intérieur d'un conteneur Docker officiel ultra-léger (`python:3-alpine`, environ 15 Mo). Docker télécharge et gère cette image automatiquement lors de l'installation. Votre machine Windows n'a besoin que de **Docker Desktop**.
 </details>
+
+<details>
+<summary><b>6. Mon fournisseur d'accès change mon adresse IP</b></summary>
+
+Un nom DuckDNS ne suit pas tout seul les changements d'adresse IP : sans mise à jour (client DDNS sur votre box ou sur le PC), l'accès tombe en panne sans message d'erreur explicite. Vérifiez régulièrement avec `Resolve-DnsName votre-nom.duckdns.org -Server 1.1.1.1` que l'adresse retournée est bien votre IP publique actuelle.
+</details>
+
+---
+
+## 🧪 Développement et tests
+
+Les tests n'ont besoin ni de Docker démarré ni d'internet (les contrôles qui utilisent Docker sont ignorés s'il est absent).
+
+```powershell
+# Portail d'authentification (Python 3, bibliothèque standard uniquement)
+python -m unittest discover -s tests -v
+
+# Installeur Windows : le vrai script est exécuté avec des saisies simulées (testé sous Windows PowerShell 5.1)
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-Installer.ps1
+```
+
+```bash
+# Script Termux : vérifications statiques (adresses d'écoute, nettoyage, syntaxe)
+bash tests/check_termux_script.sh
+```
 
 ---
 

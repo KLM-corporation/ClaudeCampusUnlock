@@ -5,6 +5,9 @@
 *.sh text eol=lf
 *.bash text eol=lf
 
+# Python : le portail est execute dans un conteneur Linux (shebang, triple guillemets)
+*.py text eol=lf
+
 # Windows PowerShell and batch scripts
 *.ps1 text eol=crlf
 *.bat text eol=crlf

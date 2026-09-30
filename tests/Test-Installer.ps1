@@ -1,4 +1,4 @@
-# Tests de install-claude-gateway.ps1 (Windows PowerShell 5.1 ou PowerShell 7). Aucun conteneur n'est demarre.
+# Tests de install-claude-gateway.ps1 (valides sous Windows PowerShell 5.1). Aucun conteneur n'est demarre.
 # Lancer depuis n'importe ou :  powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-Installer.ps1
 [CmdletBinding()]
 param(

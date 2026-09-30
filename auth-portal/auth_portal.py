@@ -2,16 +2,20 @@
 """
 ClaudeCampusUnlock - Auth Portal & Session Gateway
 =================================================
-Portail d'authentification et gestionnaire de sessions sécurisées.
+Portail d'authentification et gestionnaire de sessions.
 - Mots de passe hashés avec PBKDF2-HMAC-SHA256 salé (zéro clair).
-- Protection anti-brute-force (rate limiting par IP).
-- Sessions révocables côté serveur (kill immédiat au logout).
-- Protection anti-timing attacks (secrets.compare_digest).
-- En-têtes de sécurité stricts (CSP, X-Frame-Options, HttpOnly, Secure, SameSite=Strict).
+- Le coût PBKDF2 est payé même pour un identifiant inconnu : le temps de
+  réponse ne révèle pas quels identifiants existent.
+- Anti-brute-force : compteur par couple (IP, identifiant) + plafond par IP.
+- Sessions révocables côté serveur (supprimées au logout), purgées à l'expiration.
+- Corps de requête borné et timeout sur chaque connexion.
+- En-têtes de sécurité (CSP, X-Frame-Options, no-store) et cookie HttpOnly/Secure/SameSite=Strict.
+- Journal d'audit des connexions (succès / échecs) avec l'IP client.
 """
 
 import html
 import http.server
+import ipaddress
 import json
 import os
 import secrets
@@ -24,18 +28,35 @@ from hashlib import pbkdf2_hmac
 USERS_FILE = os.environ.get("USERS_FILE", "/app/users.json")
 LISTEN_PORT = int(os.environ.get("PORT", "8080"))
 SESSION_MAX_LIFETIME = int(os.environ.get("SESSION_MAX_LIFETIME", "28800"))  # 8 heures max
-SESSION_IDLE_TIMEOUT = int(os.environ.get("SESSION_IDLE_TIMEOUT", "7200"))   # 2 heures inactif
-RATE_LIMIT_MAX_ATTEMPTS = 5
+SESSION_IDLE_TIMEOUT = int(os.environ.get("SESSION_IDLE_TIMEOUT", "7200"))   # 2 heures sans requête HTTP
+RATE_LIMIT_MAX_ATTEMPTS = int(os.environ.get("RATE_LIMIT_MAX_ATTEMPTS", "5"))  # échecs par (IP, identifiant)
+RATE_LIMIT_IP_MAX = int(os.environ.get("RATE_LIMIT_IP_MAX", "30"))             # échecs par IP, tous identifiants
 RATE_LIMIT_WINDOW = 900  # 15 minutes
+MAX_BODY_BYTES = 4096    # un formulaire de connexion tient largement dans 4 Ko
+MAX_USERNAME_LEN = 64
+REQUEST_TIMEOUT = 10     # secondes, par opération de lecture/écriture sur la connexion
+DEFAULT_ITERATIONS = 600000
 COOKIE_NAME = "gateway_session"
 
 # Sessions en mémoire : session_id -> { "user": str, "created_at": float, "last_seen": float }
 sessions = {}
 sessions_lock = threading.Lock()
 
-# Tentatives échouées : ip -> [timestamps]
+# Échecs récents : ("ip", ip) ou ("user", ip, identifiant) -> [timestamps]
 failed_attempts = {}
 attempts_lock = threading.Lock()
+
+# Enregistrement factice : il sert à dépenser le même coût PBKDF2 quand l'identifiant
+# n'existe pas (sinon un identifiant inconnu répond nettement plus vite qu'un connu).
+_DUMMY_RECORD = {"salt": secrets.token_hex(16), "hash": "0" * 64, "iterations": DEFAULT_ITERATIONS}
+
+
+def audit(event, username, ip):
+    """Journal d'audit sur stdout (visible avec `docker compose logs auth-portal`)."""
+    # ascii() échappe retours à la ligne et caractères non ASCII : pas d'injection dans les logs.
+    safe_name = ascii(str(username)[:MAX_USERNAME_LEN])
+    sys.stdout.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [AUTH] {event} user={safe_name} ip={ip}\n")
+    sys.stdout.flush()
 
 
 def load_users():
@@ -44,20 +65,26 @@ def load_users():
         return {}
     try:
         with open(USERS_FILE, "r", encoding="utf-8-sig") as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception as e:
         print(f"[AUTH ERROR] Impossible de lire {USERS_FILE}: {e}", file=sys.stderr)
         return {}
+    if not isinstance(data, dict):
+        print(f"[AUTH ERROR] {USERS_FILE} doit contenir un objet JSON {{identifiant: {{salt, hash, iterations}}}}", file=sys.stderr)
+        return {}
+    return data
 
 
 def verify_password(user_record, password):
-    """Vérifie le mot de passe en temps constant avec PBKDF2."""
-    if not user_record or "salt" not in user_record or "hash" not in user_record:
+    """Vérifie le mot de passe avec PBKDF2, puis compare les hashs en temps constant."""
+    if not isinstance(user_record, dict) or "salt" not in user_record or "hash" not in user_record:
         return False
     try:
         salt = bytes.fromhex(user_record["salt"])
         stored_hash = user_record["hash"]
-        iterations = int(user_record.get("iterations", 600000))
+        iterations = int(user_record.get("iterations", DEFAULT_ITERATIONS))
+        if not 1 <= iterations <= 10_000_000:
+            return False
         computed_hash = pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations).hex()
         return secrets.compare_digest(computed_hash, stored_hash)
     except Exception as e:
@@ -65,28 +92,65 @@ def verify_password(user_record, password):
         return False
 
 
-def is_rate_limited(ip):
-    """Vérifie si l'adresse IP dépasse le quota de tentatives échouées."""
+def authenticate(users, username, password):
+    """Retourne l'identifiant canonique (minuscules) si les identifiants sont valides, sinon None.
+
+    Le même travail PBKDF2 est effectué que l'identifiant existe ou non.
+    """
+    wanted = username.lower()
+    canonical, record = None, None
+    for key, value in users.items():
+        if key.lower() == wanted:
+            canonical, record = key.lower(), value
+            break
+    ok = verify_password(record if record is not None else _DUMMY_RECORD, password)
+    return canonical if (ok and record is not None) else None
+
+
+def _recent(key, now):
+    """Timestamps d'échecs encore dans la fenêtre pour `key` (à appeler avec attempts_lock)."""
+    timestamps = [t for t in failed_attempts.get(key, ()) if now - t < RATE_LIMIT_WINDOW]
+    if timestamps:
+        failed_attempts[key] = timestamps
+    else:
+        failed_attempts.pop(key, None)
+    return timestamps
+
+
+def _prune_attempts(now):
+    """Évite que le dictionnaire grossisse indéfiniment (à appeler avec attempts_lock)."""
+    if len(failed_attempts) > 1000:
+        for key in list(failed_attempts):
+            _recent(key, now)
+
+
+def is_rate_limited(ip, username):
+    """Vrai si l'IP a trop échoué en général, ou trop échoué sur cet identifiant."""
     now = time.time()
     with attempts_lock:
-        timestamps = [t for t in failed_attempts.get(ip, []) if now - t < RATE_LIMIT_WINDOW]
-        failed_attempts[ip] = timestamps
-        return len(timestamps) >= RATE_LIMIT_MAX_ATTEMPTS
+        if len(_recent(("ip", ip), now)) >= RATE_LIMIT_IP_MAX:
+            return True
+        return len(_recent(("user", ip, username), now)) >= RATE_LIMIT_MAX_ATTEMPTS
 
 
-def record_failed_attempt(ip):
-    """Enregistre un échec de connexion pour l'adresse IP."""
+def record_failed_attempt(ip, username):
+    """Enregistre un échec de connexion pour l'IP et pour le couple (IP, identifiant)."""
     now = time.time()
     with attempts_lock:
-        timestamps = [t for t in failed_attempts.get(ip, []) if now - t < RATE_LIMIT_WINDOW]
-        timestamps.append(now)
-        failed_attempts[ip] = timestamps
+        for key in (("ip", ip), ("user", ip, username)):
+            timestamps = _recent(key, now)
+            timestamps.append(now)
+            failed_attempts[key] = timestamps
+        _prune_attempts(now)
 
 
-def reset_failed_attempts(ip):
-    """Réinitialise les échecs après une connexion réussie."""
+def reset_failed_attempts(ip, username):
+    """Réinitialise le compteur du couple (IP, identifiant) après une connexion réussie.
+
+    Le plafond par IP n'est volontairement pas remis à zéro : il borne le total d'échecs.
+    """
     with attempts_lock:
-        failed_attempts.pop(ip, None)
+        failed_attempts.pop(("user", ip, username), None)
 
 
 def parse_cookie(cookie_header):
@@ -113,13 +177,23 @@ def get_authenticated_user(cookie_value):
         if now - session["created_at"] > SESSION_MAX_LIFETIME:
             sessions.pop(cookie_value, None)
             return None
-        # Expiration par inactivité
+        # Expiration par inactivité (comptée sur les requêtes HTTP passant par /verify)
         if now - session["last_seen"] > SESSION_IDLE_TIMEOUT:
             sessions.pop(cookie_value, None)
             return None
         # Rafraîchir l'inactivité
         session["last_seen"] = now
         return session["user"]
+
+
+def purge_expired_sessions():
+    """Supprime les sessions expirées qui ne seraient plus jamais présentées."""
+    now = time.time()
+    with sessions_lock:
+        expired = [sid for sid, s in sessions.items()
+                   if now - s["created_at"] > SESSION_MAX_LIFETIME or now - s["last_seen"] > SESSION_IDLE_TIMEOUT]
+        for sid in expired:
+            del sessions[sid]
 
 
 LOGIN_HTML_TEMPLATE = """<!DOCTYPE html>
@@ -381,16 +455,30 @@ PORTAL_HTML_TEMPLATE = """<!DOCTYPE html>
 
 
 class AuthGatewayHandler(http.server.BaseHTTPRequestHandler):
+    # Coupe les connexions qui n'envoient plus rien (évite de garder un thread indéfiniment).
+    timeout = REQUEST_TIMEOUT
+
+    def version_string(self):
+        return "auth-portal"  # ne révèle pas la version de Python
+
     def log_message(self, format, *args):
-        # Format propre des logs
-        sys.stdout.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {self.client_address[0]} - {format % args}\n")
+        sys.stdout.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {self.get_client_ip()} - {format % args}\n")
         sys.stdout.flush()
 
     def get_client_ip(self):
-        # Récupère la vraie IP via X-Forwarded-For si présent (de Caddy)
+        """IP du client telle que vue par Caddy (dernier élément de X-Forwarded-For).
+
+        Caddy remplace X-Forwarded-For par l'adresse de son client direct : on prend donc
+        le dernier élément, celui ajouté par le proxy de confiance, et jamais une valeur
+        fournie par le client. Une valeur invalide retombe sur l'adresse de la connexion TCP.
+        """
         forwarded = self.headers.get("X-Forwarded-For")
         if forwarded:
-            return forwarded.split(",")[0].strip()
+            candidate = forwarded.split(",")[-1].strip()
+            try:
+                return str(ipaddress.ip_address(candidate))
+            except ValueError:
+                pass
         return self.client_address[0]
 
     def add_security_headers(self):
@@ -399,50 +487,54 @@ class AuthGatewayHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
 
+    def _respond(self, status, body=b"", content_type=None, headers=(), hardened=False):
+        """Envoie une réponse complète. Pour HEAD, mêmes en-têtes que GET mais sans corps."""
+        self.send_response(status)
+        if content_type:
+            self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        for name, value in headers:
+            self.send_header(name, value)
+        if hardened:
+            self.add_security_headers()
+        self.end_headers()
+        if body and self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _redirect(self, location, headers=()):
+        self._respond(302, b"", headers=(("Location", location), *headers))
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        client_ip = self.get_client_ip()
         cookie_val = parse_cookie(self.headers.get("Cookie"))
         user = get_authenticated_user(cookie_val)
 
-        # 1. Endpoint /verify (utilisé par Caddy forward_auth)
+        # 1. Endpoint /verify (utilisé par Caddy forward_auth). HEAD donne la même réponse que GET.
         if path == "/verify":
             if user:
-                self.send_response(200)
-                self.send_header("X-Auth-User", user)
-                self.send_header("Content-Type", "text/plain")
-                self.send_header("Content-Length", "2")
-                self.end_headers()
-                self.wfile.write(b"OK")
+                self._respond(200, b"OK", "text/plain", (("X-Auth-User", user),))
             else:
-                self.send_response(302)
-                self.send_header("Location", "/login")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
+                self._redirect("/login")
             return
 
-        # 2. Endpoint /logout
+        # 2. Endpoint /logout (un HEAD n'a pas d'effet de bord)
         if path == "/logout":
-            if cookie_val:
+            if cookie_val and self.command != "HEAD":
                 with sessions_lock:
                     sessions.pop(cookie_val, None)
-            self.send_response(302)
-            self.send_header("Location", "/login")
-            self.send_header("Set-Cookie", f"{COOKIE_NAME}=deleted; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure")
-            self.send_header("Clear-Site-Data", '"cache", "cookies", "storage"')
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+            self._redirect("/login", (
+                ("Set-Cookie", f"{COOKIE_NAME}=deleted; Path=/; Max-Age=0; HttpOnly; SameSite=Strict; Secure"),
+                ("Clear-Site-Data", '"cache", "cookies", "storage"'),
+            ))
             return
 
         # 3. Endpoint /login (affichage de la page)
         if path == "/login" or path == "/login/":
             if user:
                 # Déjà connecté, rediriger vers le portail
-                self.send_response(302)
-                self.send_header("Location", "/portal")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
+                self._redirect("/portal")
                 return
 
             error_msg = ""
@@ -455,91 +547,83 @@ class AuthGatewayHandler(http.server.BaseHTTPRequestHandler):
                     error_msg = '<div class="alert">❌ Identifiant ou mot de passe incorrect.</div>'
 
             body = LOGIN_HTML_TEMPLATE.replace("__ERROR_ALERT__", error_msg).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.add_security_headers()
-            self.end_headers()
-            self.wfile.write(body)
+            self._respond(200, body, "text/html; charset=utf-8", hardened=True)
             return
 
         # 4. Endpoint /portal ou / (wrapper avec topbar et iframe)
         if path in ["/", "/portal", "/portal/"]:
             if not user:
-                self.send_response(302)
-                self.send_header("Location", "/login")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
+                self._redirect("/login")
                 return
 
             escaped_user = html.escape(user)
             body = PORTAL_HTML_TEMPLATE.replace("__USER_ESCAPED__", escaped_user).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.add_security_headers()
-            self.end_headers()
-            self.wfile.write(body)
+            self._respond(200, body, "text/html; charset=utf-8", hardened=True)
             return
 
         # Page non trouvée
-        self.send_response(404)
-        self.send_header("Content-Type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"404 Not Found")
+        self._respond(404, b"404 Not Found", "text/plain")
 
-    def do_HEAD(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-        if path in ["/login", "/login/", "/verify", "/portal", "/portal/", "/"]:
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.add_security_headers()
-            self.end_headers()
-        else:
-            self.send_response(404)
-            self.end_headers()
+    do_HEAD = do_GET
+
+    def _content_length(self):
+        """Taille du corps annoncée, ou None si l'en-tête est invalide (négatif, texte...)."""
+        raw = self.headers.get("Content-Length")
+        if raw is None:
+            return 0
+        raw = raw.strip()
+        if not (raw.isascii() and raw.isdigit()):
+            return None
+        if len(raw) > 9:  # évite de convertir des entiers absurdes
+            return MAX_BODY_BYTES + 1
+        return int(raw)
 
     def do_POST(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-        client_ip = self.get_client_ip()
+        path = urllib.parse.urlparse(self.path).path
 
         if path != "/login" and path != "/login/":
-            self.send_response(404)
-            self.end_headers()
+            self._respond(404, b"404 Not Found", "text/plain")
             return
 
-        # Vérification Rate Limit
-        if is_rate_limited(client_ip):
-            self.send_response(302)
-            self.send_header("Location", "/login?error=rate_limited")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+        length = self._content_length()
+        if length is None:
+            self.close_connection = True
+            self._respond(400, b"Bad Request", "text/plain")
+            return
+        if length > MAX_BODY_BYTES:
+            self.close_connection = True
+            self._respond(413, b"Payload Too Large", "text/plain")
             return
 
-        # Délai anti-timing & anti-bot
-        time.sleep(0.3)
+        try:
+            post_data = self.rfile.read(length).decode("utf-8", errors="ignore")
+            form_data = urllib.parse.parse_qs(post_data, max_num_fields=10)
+        except (OSError, ValueError):  # timeout, connexion coupée ou formulaire abusif
+            self.close_connection = True
+            return
 
-        content_length = int(self.headers.get("Content-Length", 0))
-        post_data = self.rfile.read(content_length).decode("utf-8", errors="ignore")
-        form_data = urllib.parse.parse_qs(post_data)
-
-        username = form_data.get("username", [""])[0].strip()
+        client_ip = self.get_client_ip()
+        username = form_data.get("username", [""])[0].strip()[:MAX_USERNAME_LEN]
         password = form_data.get("password", [""])[0]
+        attempt_key = username.lower()
 
         users = load_users()
-        user_record = None
-        canonical_user = None
-        for u_key, u_val in users.items():
-            if u_key.lower() == username.lower():
-                user_record = u_val
-                canonical_user = u_key.lower()
-                break
+        # On ne journalise que les identifiants qui existent : un mot de passe tapé par erreur
+        # dans le champ identifiant ne doit pas finir dans les logs.
+        log_name = attempt_key if any(k.lower() == attempt_key for k in users) else "<inconnu>"
 
-        if user_record and verify_password(user_record, password):
-            # Succès ! Réinitialiser les échecs
-            reset_failed_attempts(client_ip)
+        # Vérification Rate Limit (par IP et par couple IP + identifiant)
+        if is_rate_limited(client_ip, attempt_key):
+            audit("login blocked (rate limit)", log_name, client_ip)
+            self._redirect("/login?error=rate_limited")
+            return
+
+        canonical_user = authenticate(users, username, password)
+
+        if canonical_user:
+            # Succès ! Réinitialiser les échecs de ce couple
+            reset_failed_attempts(client_ip, attempt_key)
+            purge_expired_sessions()
             # Générer un session ID sécurisé (256 bits d'entropie)
             session_id = secrets.token_urlsafe(32)
             now = time.time()
@@ -549,27 +633,23 @@ class AuthGatewayHandler(http.server.BaseHTTPRequestHandler):
                     "created_at": now,
                     "last_seen": now
                 }
-            self.send_response(302)
-            self.send_header("Location", "/portal")
+            audit("login ok", canonical_user, client_ip)
             # Cookie de session : pas de Max-Age fixe (détruit quand le navigateur est fermé)
-            self.send_header("Set-Cookie", f"{COOKIE_NAME}={session_id}; Path=/; HttpOnly; SameSite=Strict; Secure")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
+            self._redirect("/portal", (
+                ("Set-Cookie", f"{COOKIE_NAME}={session_id}; Path=/; HttpOnly; SameSite=Strict; Secure"),
+            ))
         else:
-            # Échec
-            record_failed_attempt(client_ip)
-            self.send_response(302)
-            self.send_header("Location", "/login?error=invalid")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
+            record_failed_attempt(client_ip, attempt_key)
+            audit("login failed", log_name, client_ip)
+            self._redirect("/login?error=invalid")
 
 
 def run_server():
     server_address = ("0.0.0.0", LISTEN_PORT)
     httpd = http.server.ThreadingHTTPServer(server_address, AuthGatewayHandler)
-    print(f"[AUTH PORTAL] Démarrage sur le port {LISTEN_PORT}...")
+    print(f"[AUTH PORTAL] Démarrage sur le port {LISTEN_PORT}...", flush=True)
+    if not load_users():
+        print(f"[AUTH PORTAL] Attention : aucun utilisateur chargé depuis {USERS_FILE}.", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

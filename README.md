@@ -168,6 +168,15 @@ Options utiles : `-InstallDocker` (installe Docker Desktop), `-FirefoxMemoryLimi
 #### ➕ Ajouter un ami plus tard
 Relancez simplement `.\install-claude-gateway.ps1` : le script détecte l'installation existante, propose de **conserver les amis actuels (leurs mots de passe ne changent pas)** et n'en demande que les nouveaux. Les anciens fichiers sont sauvegardés dans `%USERPROFILE%\claude-gateway\backup-AAAAMMJJ-HHMMSS`. Répondre `n` repart de zéro. Les conteneurs sont recréés : les sessions ouvertes sur le portail sont perdues (reconnexion nécessaire), mais les profils Firefox (cookies, compte Claude) sont conservés. Le script ne modifie que les fichiers qu'il génère : si vous avez retouché `compose.yml` ou le `Caddyfile` à la main, vos modifications seront écrasées (elles restent dans la sauvegarde).
 
+#### 👥 Deux comptes, un seul navigateur (alias)
+Si un compte du portail doit utiliser le navigateur (et donc le compte Claude) d'un autre ami, sans navigateur propre, créez d'abord le compte normalement, puis relancez en déclarant l'alias :
+
+```powershell
+.\install-claude-gateway.ps1 -Alias @{ gsmario = 'gabi' }
+```
+
+Le lien est enregistré dans `users.json` (`"alias_of"`) et conservé aux relances suivantes. Les deux comptes partagent alors la même session Firefox : à réserver à une même personne ou à des personnes qui se font entièrement confiance.
+
 #### 💡 Comment fonctionne l'aiguillage (Smart Auth Portal) :
 - **URL unique pour tout le monde** : Tous vos amis ouvrent la même adresse web : `https://relais-claude.duckdns.org`.
 - **Portail d'authentification** : Une page web affiche le formulaire de connexion. Anti-force-brute : 5 échecs par couple (adresse IP, identifiant) et 30 par adresse IP, sur 15 minutes. Sous Docker Desktop, toutes les connexions arrivent avec l'adresse de la passerelle Docker : le blocage joue alors surtout par identifiant.

@@ -33,6 +33,11 @@
 .PARAMETER GenerateOnly
     Genere les fichiers sans telecharger d'images ni demarrer Docker.
 
+.PARAMETER Alias
+    Declare qu'un compte du portail utilise le navigateur d'un autre ami (sans navigateur propre),
+    par exemple  -Alias @{ gsmario = 'gabi' }. Le compte doit deja exister dans users.json ; le lien
+    est enregistre dans users.json ("alias_of") et conserve aux relances suivantes.
+
 .EXAMPLE
     Set-ExecutionPolicy -Scope Process Bypass
     .\install-claude-gateway.ps1 -InstallDocker
@@ -47,7 +52,8 @@ param(
     [switch]$InstallDocker,
     [ValidatePattern('^[1-9][0-9]*[mg]$')]
     [string]$FirefoxMemoryLimit = "3g",
-    [switch]$GenerateOnly
+    [switch]$GenerateOnly,
+    [hashtable]$Alias = @{}
 )
 
 $ErrorActionPreference = "Stop"
@@ -276,6 +282,12 @@ function Backup-ExistingFiles {
     return $backupDir
 }
 
+function Test-IsAlias {
+    # Vrai si ce compte n'a pas de navigateur propre et utilise celui d'un autre ami.
+    param([Parameter(Mandatory)][object]$Friend)
+    return ($Friend.PSObject.Properties.Name -contains 'AliasOf') -and (-not [string]::IsNullOrEmpty($Friend.AliasOf))
+}
+
 function Get-ExistingFriends {
     # Lit users.json d'une installation precedente. Retourne un tableau (vide s'il n'y en a pas).
     param([Parameter(Mandatory)][string]$UsersJsonPath)
@@ -302,6 +314,8 @@ function Get-ExistingFriends {
         }
         $iterations = 600000
         if ($fields -contains 'iterations') { $iterations = [int]$record.iterations }
+        $aliasOf = $null
+        if ($fields -contains 'alias_of') { $aliasOf = [string]$record.alias_of }
         $result += [PSCustomObject]@{
             Id         = $id
             Username   = $id
@@ -309,11 +323,39 @@ function Get-ExistingFriends {
             Salt       = $record.salt
             Hash       = $record.hash
             Iterations = $iterations
-            Container  = "$id-firefox"
+            Container  = $(if ($aliasOf) { "$aliasOf-firefox" } else { "$id-firefox" })
+            AliasOf    = $aliasOf
             IsNew      = $false
         }
     }
+
+    foreach ($entry in $result) {
+        if (Test-IsAlias $entry) {
+            $target = @($result | Where-Object { ($_.Id -eq $entry.AliasOf) -and -not (Test-IsAlias $_) })
+            if ($target.Count -eq 0) {
+                throw "'$($entry.Id)' est declare alias de '$($entry.AliasOf)' dans users.json, mais cet ami n'existe pas (ou est lui-meme un alias)."
+            }
+        }
+    }
     return $result
+}
+
+function Set-FriendAliases {
+    # Applique -Alias @{ compte = 'ami' } aux amis charges depuis users.json.
+    param(
+        [Parameter(Mandatory)][object[]]$Friends,
+        [Parameter(Mandatory)][hashtable]$Map
+    )
+    foreach ($aliasId in $Map.Keys) {
+        $target = [string]$Map[$aliasId]
+        $entry = @($Friends | Where-Object { $_.Id -eq $aliasId })
+        if ($entry.Count -eq 0) { throw "-Alias : le compte '$aliasId' n'existe pas dans users.json." }
+        if ($aliasId -eq $target) { throw "-Alias : '$aliasId' ne peut pas etre son propre alias." }
+        $owner = @($Friends | Where-Object { ($_.Id -eq $target) -and -not (Test-IsAlias $_) })
+        if ($owner.Count -eq 0) { throw "-Alias : '$target' n'est pas un ami avec navigateur propre." }
+        $entry[0].AliasOf = $target
+        $entry[0].Container = "$target-firefox"
+    }
 }
 
 function Get-ExistingHostname {
@@ -363,6 +405,9 @@ function New-ComposeContent {
         [Parameter(Mandatory)][object[]]$Friends,
         [string]$MemoryLimit = "3g"
     )
+
+    # Un alias n'a ni conteneur ni reseau propre : il utilise ceux de l'ami dont il depend.
+    $Friends = @($Friends | Where-Object { -not (Test-IsAlias $_) })
 
     $serviceBlocks = New-Object System.Collections.Generic.List[string]
     foreach ($friend in $Friends) {
@@ -479,9 +524,17 @@ function New-CaddyfileContent {
     )
 
     $routes = New-Object System.Collections.Generic.List[string]
-    foreach ($friend in $Friends) {
+    foreach ($friend in @($Friends | Where-Object { -not (Test-IsAlias $_) })) {
+        # Comptes qui partagent ce navigateur (alias) : l'en-tete X-Auth-User peut valoir l'un d'eux.
+        $aliasNames = @($Friends | Where-Object { (Test-IsAlias $_) -and ($_.AliasOf -eq $friend.Id) } | ForEach-Object { $_.Username })
+        if ($aliasNames.Count -eq 0) {
+            $matcherLine = '@is_{0} header X-Auth-User {1}' -f $friend.Id, $friend.Username
+        }
+        else {
+            $matcherLine = '@is_{0} header_regexp X-Auth-User ^({1})$' -f $friend.Id, ((@($friend.Username) + $aliasNames) -join '|')
+        }
         $routes.Add(@"
-            @is_$($friend.Id) header X-Auth-User $($friend.Username)
+            $matcherLine
             handle @is_$($friend.Id) {
                 reverse_proxy https://$($friend.Container):5800 {
                     header_up -Cookie
@@ -632,16 +685,22 @@ $usedIds = @{}
 $existingFriends = @(Get-ExistingFriends -UsersJsonPath $usersJsonPath)
 $keepExisting = $false
 if ($existingFriends.Count -gt 0) {
-    $names = ($existingFriends | ForEach-Object { $_.Id }) -join ", "
-    Write-Info "Installation existante detectee ($($existingFriends.Count) ami(s) : $names)."
+    $names = ($existingFriends | ForEach-Object { if (Test-IsAlias $_) { "$($_.Id) (alias de $($_.AliasOf))" } else { $_.Id } }) -join ", "
+    Write-Info "Installation existante detectee ($($existingFriends.Count) compte(s) : $names)."
     $answer = Read-Host "Conserver ces amis (mots de passe inchanges) et en ajouter de nouveaux ? (O/n)"
     if ($answer -notmatch '^\s*(n|non|no)\s*$') {
         $keepExisting = $true
         foreach ($existing in $existingFriends) {
             $friends += $existing
             $usedIds[$existing.Id] = $true
-            if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $InstallDir "data") $existing.Id))) {
-                Write-WarningMessage "Aucun profil Firefox existant pour '$($existing.Id)' (data\$($existing.Id) absent) : un navigateur vierge sera cree. Si cet identifiant est un alias de l'ami d'un autre profil (routage ajoute a la main dans le Caddyfile), reponds 'n' et corrige users.json d'abord."
+        }
+        if ($Alias.Count -gt 0) { Set-FriendAliases -Friends $friends -Map $Alias }
+        foreach ($existing in $friends) {
+            if (Test-IsAlias $existing) {
+                Write-Info "Alias : '$($existing.Id)' utilise le navigateur de '$($existing.AliasOf)' (pas de navigateur propre)."
+            }
+            elseif (-not (Test-Path -LiteralPath (Join-Path (Join-Path $InstallDir "data") $existing.Id))) {
+                Write-WarningMessage "Aucun profil Firefox existant pour '$($existing.Id)' (data\$($existing.Id) absent) : un navigateur vierge sera cree. Si ce compte doit partager le navigateur d'un autre ami, annule (Ctrl+C) et relance avec -Alias @{ $($existing.Id) = 'autre-ami' }."
             }
         }
         Write-WarningMessage "Les conteneurs vont etre recrees : les sessions ouvertes sur le portail seront perdues (les amis devront se reconnecter ; leurs profils Firefox sont conserves)."
@@ -649,6 +708,9 @@ if ($existingFriends.Count -gt 0) {
     else {
         Write-WarningMessage "Les amis existants seront remplaces (les anciens fichiers sont sauvegardes)."
     }
+}
+if (($Alias.Count -gt 0) -and (-not $keepExisting)) {
+    throw "-Alias ne s'applique qu'a une installation existante que tu choisis de conserver (reponse O)."
 }
 
 $defaultHost = Get-ExistingHostname -CaddyfilePath $caddyPath
@@ -666,7 +728,7 @@ do {
     }
 } while ([string]::IsNullOrWhiteSpace($publicHost))
 
-$maxNew = $MaxFriends - $friends.Count
+$maxNew = $MaxFriends - @($friends | Where-Object { -not (Test-IsAlias $_) }).Count
 $minNew = if ($keepExisting) { 0 } else { 1 }
 if ($maxNew -lt $minNew) { throw "Il y a deja $MaxFriends amis : impossible d'en ajouter." }
 if ($keepExisting) { $countPrompt = "Combien d'amis veux-tu AJOUTER ($minNew a $maxNew) ?" } else { $countPrompt = "Combien d'amis veux-tu configurer ($minNew a $maxNew) ?" }
@@ -710,6 +772,7 @@ for ($index = 1; $index -le $newCount; $index++) {
         Hash       = $crypto.hash
         Iterations = $crypto.iterations
         Container  = "$id-firefox"
+        AliasOf    = $null
         IsNew      = $true
     }
 }
@@ -728,6 +791,7 @@ foreach ($friend in $friends) {
         hash       = $friend.Hash
         iterations = $friend.Iterations
     }
+    if (Test-IsAlias $friend) { $usersDict[$friend.Username]['alias_of'] = $friend.AliasOf }
 }
 $usersJsonContent = $usersDict | ConvertTo-Json -Depth 5
 
@@ -788,7 +852,7 @@ foreach ($friend in @($friends | Where-Object { $_.IsNew })) {
     Write-Host "  Mot de passe : $($friend.Password)"
     Write-Host ""
 }
-$keptNames = @($friends | Where-Object { -not $_.IsNew } | ForEach-Object { $_.Id })
+$keptNames = @($friends | Where-Object { -not $_.IsNew } | ForEach-Object { if (Test-IsAlias $_) { "$($_.Id) (alias de $($_.AliasOf))" } else { $_.Id } })
 if ($keptNames.Count -gt 0) {
     Write-Host "Amis conserves (identifiants inchanges) : $($keptNames -join ', ')"
     Write-Host ""

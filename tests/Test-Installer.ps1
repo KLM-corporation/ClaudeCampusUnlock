@@ -124,6 +124,14 @@ Assert-True ($caddyText -match 'header_up -Cookie') "le cookie du portail n'est 
 Assert-True ($caddyText -match '(?s)handle \{\s*respond "[^"]+" 403') "un utilisateur sans conteneur recoit un 403 explicite"
 Assert-True (-not ($caddyText -match 'novnc_root')) "plus de bloc de routage racine superflu"
 
+# alias : un compte qui partage le navigateur d'un autre ami
+$withAlias = @($twoFriends[0]) + @([PSCustomObject]@{ Id = 'gsmario'; Username = 'gsmario'; Container = 'gabi-firefox'; AliasOf = 'gabi' }) + @($twoFriends[1])
+$aliasCompose = New-ComposeContent -Friends $withAlias
+$aliasCaddy = New-CaddyfileContent -PublicHost 'relais.example.org' -Friends $withAlias
+Assert-True (($aliasCompose -notmatch 'gsmario') -and ($aliasCompose -match 'gabi-firefox:') -and ($aliasCompose -match 'maxim-firefox:')) "alias : pas de conteneur ni de reseau pour l'alias"
+Assert-True ($aliasCaddy -match '@is_gabi header_regexp X-Auth-User \^\(gabi\|gsmario\)\$') "alias : l'alias est route vers le navigateur de gabi"
+Assert-True ($aliasCaddy -match '@is_maxim header X-Auth-User maxim') "alias : les comptes sans alias gardent une correspondance exacte"
+
 $composeFile = Join-Path $WorkDir 'compose-check\compose.yml'
 New-Item -ItemType Directory -Path (Split-Path $composeFile) -Force | Out-Null
 Write-TextFile -Path $composeFile -Content $composeText
@@ -146,6 +154,10 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
         Write-TextFile -Path $caddyFile -Content $caddyText
         $res = Invoke-Capture { docker run --rm --network none -v "${caddyFile}:/etc/caddy/Caddyfile:ro" caddy:2 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile }
         Assert-True ($res.Output -match 'Valid configuration') "caddy validate accepte le Caddyfile genere"
+        $aliasCaddyFile = Join-Path $WorkDir 'compose-check\Caddyfile.alias'
+        Write-TextFile -Path $aliasCaddyFile -Content $aliasCaddy
+        $res = Invoke-Capture { docker run --rm --network none -v "${aliasCaddyFile}:/etc/caddy/Caddyfile:ro" caddy:2 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile }
+        Assert-True ($res.Output -match 'Valid configuration') "caddy validate accepte le Caddyfile avec alias"
     }
     else { Write-Output "skip image caddy:2 absente : validation du Caddyfile ignoree (aucun telechargement)" }
 }
@@ -169,11 +181,11 @@ function Read-Host {
     return $value
 }
 function Invoke-Installer {
-    param([string[]]$Answers, [string]$Dir, [string]$Script = $installerPath)
+    param([string[]]$Answers, [string]$Dir, [string]$Script = $installerPath, [hashtable]$AliasMap = @{})
     $global:__answers.Clear(); $global:__prompts.Clear()
     foreach ($a in $Answers) { $global:__answers.Enqueue($a) }
     $log = Join-Path $WorkDir 'installer.log'
-    & $Script -InstallDir $Dir -GenerateOnly *> $log
+    & $Script -InstallDir $Dir -GenerateOnly -Alias $AliasMap *> $log
     return (Get-Content -LiteralPath $log -Raw)
 }
 function Read-Users { param([string]$Dir) return (Get-Content -LiteralPath (Join-Path $Dir 'users.json') -Raw | ConvertFrom-Json) }
@@ -232,6 +244,32 @@ $threw = $false; try { $null = Invoke-Installer -Dir (Join-Path $WorkDir 'instal
 Assert-True $threw "5d nombre d'amis hors limites refuse"
 $threw = $false; $null = Invoke-Installer -Dir (Join-Path $WorkDir 'install-f') -Answers @('192.168.1.10', 'relais.example.org', '1', 'ami', '') 2>$null
 Assert-True ((Read-Users (Join-Path $WorkDir 'install-f')).PSObject.Properties.Name -contains 'ami') "5d une adresse IP comme nom DNS est redemandee"
+
+# 5f. alias : gsmario partage le navigateur de gabi (cas d'une installation reelle retouchee a la main)
+$installDirG = Join-Path $WorkDir 'install-g'
+$null = Invoke-Installer -Dir $installDirG -Answers @('relais.example.org', '2', 'gabi', $typedPassword, $typedPassword, 'gsmario', $typedPassword, $typedPassword)
+New-Item -ItemType Directory -Path (Join-Path $installDirG 'data\gabi') -Force | Out-Null
+$gsmarioBefore = (Read-Users $installDirG).gsmario
+$log = Invoke-Installer -Dir $installDirG -Answers @('O', '', '0') -AliasMap @{ gsmario = 'gabi' }
+$users = Read-Users $installDirG
+Assert-True (($users.gsmario.alias_of -eq 'gabi') -and ($users.gsmario.hash -eq $gsmarioBefore.hash) -and ($users.gsmario.salt -eq $gsmarioBefore.salt)) "5f -Alias : alias_of enregistre, mot de passe inchange"
+$composeG = Get-Content -LiteralPath (Join-Path $installDirG 'compose.yml') -Raw
+Assert-True (($composeG -match 'gabi-firefox:') -and ($composeG -notmatch 'gsmario')) "5f l'alias n'a pas de conteneur"
+Assert-True ((Get-Content -LiteralPath (Join-Path $installDirG 'Caddyfile') -Raw) -match '\^\(gabi\|gsmario\)\$') "5f le Caddyfile route gsmario vers gabi"
+Assert-True (($log -match "Alias : 'gsmario' utilise le navigateur de 'gabi'") -and ($log -notmatch 'Aucun profil Firefox existant')) "5f pas d'avertissement 'profil absent' pour un alias"
+$null = Invoke-Installer -Dir $installDirG -Answers @('O', '', '0')
+$users = Read-Users $installDirG
+Assert-True ($users.gsmario.alias_of -eq 'gabi') "5f l'alias est conserve aux relances suivantes (sans -Alias)"
+$message = 'aucune erreur'; try { $null = Invoke-Installer -Dir $installDirG -Answers @('O', '', '0') -AliasMap @{ inconnu = 'gabi' } } catch { $message = $_.Exception.Message }
+Assert-True ($message -like "*'inconnu' n'existe pas*") "5f -Alias refuse un compte inexistant"
+$message = 'aucune erreur'; try { $null = Invoke-Installer -Dir $installDirG -Answers @('O', '', '0') -AliasMap @{ gsmario = 'personne' } } catch { $message = $_.Exception.Message }
+Assert-True ($message -like "*'personne' n'est pas un ami*") "5f -Alias refuse une cible inexistante"
+$message = 'aucune erreur'; try { $null = Invoke-Installer -Dir $installDirG -Answers @('n', 'relais.example.org', '1', 'solo', '') -AliasMap @{ gsmario = 'gabi' } } catch { $message = $_.Exception.Message }
+Assert-True ($message -like '*ne s''applique qu''a une installation existante*') "5f -Alias refuse de s'appliquer quand on repart de zero"
+$raw = (Get-Content -LiteralPath (Join-Path $installDirG 'users.json') -Raw).Replace('"alias_of":  "gabi"', '"alias_of":  "fantome"')
+[System.IO.File]::WriteAllText((Join-Path $installDirG 'users.json'), $raw)
+$message = 'aucune erreur'; try { $null = Invoke-Installer -Dir $installDirG -Answers @('O', '', '0') } catch { $message = $_.Exception.Message }
+Assert-True ($message -like "*alias de 'fantome'*") "5f un alias_of vers un ami inexistant dans users.json est refuse avec un message clair"
 
 # 5e. le .ps1 seul (sans auth-portal\) echoue AVANT la premiere question
 $aloneDir = Join-Path $WorkDir 'alone'

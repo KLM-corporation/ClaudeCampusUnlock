@@ -84,6 +84,9 @@ $fileProbe = Join-Path $WorkDir 'probe.txt'
 Protect-SecretFile -Path $fileProbe
 $acl = Get-Acl -LiteralPath $fileProbe
 Assert-True (($acl.AreAccessRulesProtected) -and (@($acl.Access).Count -eq 1)) "Protect-SecretFile : droits limites a un seul compte, heritage coupe"
+$warningSeen = $false
+$warningSeen = (Protect-SecretFile -Path $fileProbe 6>&1 | Out-String) -match "Impossible de restreindre"
+Assert-True (-not $warningSeen) "Protect-SecretFile : idempotent (2e appel sur un fichier deja protege, sans avertissement)"
 Assert-True (-not ((Get-Item -LiteralPath $fileProbe -Force).Attributes -band [System.IO.FileAttributes]::Hidden)) "Protect-SecretFile ne cache plus le fichier"
 [System.IO.File]::SetAttributes($fileProbe, [System.IO.FileAttributes]::Hidden)
 $threw = $false; try { Write-TextFile -Path $fileProbe -Content "nouveau`r`ncontenu" } catch { $threw = $true }

@@ -232,19 +232,13 @@ function Protect-SecretFile {
     # empechait de reecrire le fichier a la 2e execution, et n'apporte aucune securite.)
     param([Parameter(Mandatory)][string]$Path)
 
-    try {
-        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $acl = Get-Acl -LiteralPath $Path
-        $acl.SetAccessRuleProtection($true, $false)
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            $currentUser,
-            "FullControl",
-            "Allow"
-        )
-        $acl.SetAccessRule($rule)
-        Set-Acl -LiteralPath $Path -AclObject $acl
-    }
-    catch {
+    # icacls ne modifie que la liste d'acces. Set-Acl, lui, tente aussi de changer le proprietaire et
+    # echoue (SeSecurityPrivilege) sur un fichier cree par un PowerShell administrateur puis relu
+    # depuis un terminal normal, ce que le README encourage.
+    $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $exitCode = 1
+    try { $exitCode = Invoke-NativeQuiet { icacls.exe $Path /inheritance:r /grant:r "${currentUser}:(F)" } } catch { $exitCode = 1 }
+    if ($exitCode -ne 0) {
         Write-WarningMessage "Impossible de restreindre automatiquement les droits de $Path. Garde ce fichier prive."
     }
 }

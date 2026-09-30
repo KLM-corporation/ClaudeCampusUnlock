@@ -122,7 +122,9 @@ http {
     }
 
     server {
-        listen 8081;
+        # Uniquement en local : cloudflared s'y connecte sur 127.0.0.1. Ecouter sur toutes
+        # les interfaces exposerait le mot de passe Basic en clair sur le reseau local.
+        listen 127.0.0.1:8081;
         server_name _;
 
         auth_basic "Private browser";
@@ -187,13 +189,17 @@ start_browser() {
             > /root/claude-browser-logs/x11vnc.log 2>&1 &
 
         sleep 2
+        # noVNC est sans mot de passe : il DOIT rester sur 127.0.0.1. Par defaut novnc_proxy
+        # et websockify ecoutent sur toutes les interfaces, ce qui contournerait la protection
+        # nginx pour tout appareil du meme Wi-Fi ou partage de connexion.
+        # (Pas d apostrophe ici : ce bloc est dans une chaine entre apostrophes simples.)
         if [ -x /usr/share/novnc/utils/novnc_proxy ]; then
             /usr/share/novnc/utils/novnc_proxy \
                 --vnc localhost:5900 \
-                --listen 6080 \
+                --listen 127.0.0.1:6080 \
                 > /root/claude-browser-logs/novnc.log 2>&1 &
         else
-            websockify --web=/usr/share/novnc 6080 localhost:5900 \
+            websockify --web=/usr/share/novnc 127.0.0.1:6080 localhost:5900 \
                 > /root/claude-browser-logs/novnc.log 2>&1 &
         fi
 
@@ -229,6 +235,9 @@ start_all() {
     require_termux
     ensure_dependencies
     setup_auth
+
+    # Nettoyage garanti, y compris si le demarrage echoue a mi-chemin (sinon noVNC resterait actif).
+    trap stop_all EXIT INT TERM
     start_browser
     start_nginx
     termux-wake-lock >/dev/null 2>&1 || true
@@ -240,7 +249,6 @@ start_all() {
     warn "L'URL affichée par cloudflared changera au prochain démarrage."
     printf '\n'
 
-    trap stop_all EXIT INT TERM
     cloudflared tunnel --url http://127.0.0.1:8081
 }
 
